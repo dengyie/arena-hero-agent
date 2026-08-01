@@ -63,7 +63,8 @@ async def post_plan(token: str, tick: int, plan: dict[str, Any], dry_run: bool, 
             if completed.returncode != 0:
                 raise RuntimeError("curl command failed: " + completed.stderr[:200])
             status = completed.stdout.strip()
-            body = open(body_path, encoding="utf-8").read()
+            with open(body_path, encoding="utf-8") as response_file:
+                body = response_file.read()
         finally:
             if body_path:
                 try:
