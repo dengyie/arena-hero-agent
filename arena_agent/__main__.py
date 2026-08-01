@@ -8,7 +8,7 @@ import logging
 import os
 import time
 from typing import Any
-from urllib.request import Request, urlopen
+from urllib.request import Request, ProxyHandler, build_opener
 
 from .journal import Journal
 from .model import snapshot_from_state
@@ -17,6 +17,7 @@ from .policy import economy_plan
 LOG = logging.getLogger("arena_agent")
 WS_URL = "wss://api.arenahero.io/api/v1/game/ws"
 HTTP_URL = "https://api.arenahero.io/api/v1/game/commands"
+DIRECT_HTTP = build_opener(ProxyHandler({}))
 
 class ProtocolError(RuntimeError): pass
 
@@ -35,7 +36,7 @@ async def post_plan(token: str, tick: int, plan: dict[str, Any], dry_run: bool, 
     if csrf:
         req.add_header("X-CSRF-Token", csrf)
     def send() -> dict[str, Any]:
-        with urlopen(req, timeout=5) as response:
+        with DIRECT_HTTP.open(req, timeout=5) as response:
             return {"status": response.status, "body": json.loads(response.read().decode())}
     return await asyncio.to_thread(send)
 
