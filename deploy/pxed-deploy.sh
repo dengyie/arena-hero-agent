@@ -21,10 +21,16 @@ else
   git -C "$APP_DIR" fetch --prune origin
   git -C "$APP_DIR" pull --ff-only
 fi
-python3 -m venv "$APP_DIR/.venv"
-"$APP_DIR/.venv/bin/pip" install --disable-pip-version-check -r "$APP_DIR/requirements.txt"
+PYTHON_BIN="python3"
+if python3 -m venv "$APP_DIR/.venv" 2>/dev/null; then
+  PYTHON_BIN="$APP_DIR/.venv/bin/python"
+  "$PYTHON_BIN" -m pip install --disable-pip-version-check -r "$APP_DIR/requirements.txt"
+else
+  echo "venv unavailable; using system Python and existing/user-site dependencies" >&2
+  python3 -m pip install --user --disable-pip-version-check -r "$APP_DIR/requirements.txt" || true
+fi
 cd "$APP_DIR"
-"$APP_DIR/.venv/bin/python" -m unittest discover -s tests -p 'test_*.py'
+"$PYTHON_BIN" -m unittest discover -s tests -p 'test_*.py'
 
 if [[ "$MODE" == "live" ]]; then
   [[ -s "$ENV_FILE" ]] || { echo "live requested but protected token file is missing: $ENV_FILE" >&2; exit 3; }
@@ -35,9 +41,9 @@ fi
 
 mkdir -p "$APP_DIR/runtime"
 if [[ "$MODE" == "live" ]]; then
-  cp "$APP_DIR/deploy/supervisor-arena-hero.conf" "$SUPERVISOR_CONF"
+  sed "s|/data/arena-hero-agent/.venv/bin/python|$PYTHON_BIN|g" "$APP_DIR/deploy/supervisor-arena-hero.conf" > "$SUPERVISOR_CONF"
 else
-  cp "$APP_DIR/deploy/supervisor-arena-hero-dry-run.conf" "$SUPERVISOR_CONF"
+  sed "s|/data/arena-hero-agent/.venv/bin/python|$PYTHON_BIN|g" "$APP_DIR/deploy/supervisor-arena-hero-dry-run.conf" > "$SUPERVISOR_CONF"
 fi
 chmod 600 "$SUPERVISOR_CONF"
 supervisorctl -c /personal/pxed/supervisord.conf reread
