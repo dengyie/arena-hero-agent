@@ -50,7 +50,8 @@ class AgentTests(unittest.TestCase):
             j.write("plan", session="s", tick=1,
                     state={"status": "ACTIVE", "objects": {"total": 1}},
                     plan={"unit_actions": {}}, result={"status": 202})
-            self.assertIn('"objects":{"total":1}', open(f"{d}/journal.jsonl").read())
+            from pathlib import Path
+            self.assertIn('"objects":{"total":1}', Path(f"{d}/journal.jsonl").read_text())
 
     def test_command_auth_failure_is_permanent(self):
         async def run():
