@@ -47,7 +47,6 @@ async def post_plan(token: str, tick: int, plan: dict[str, Any], dry_run: bool, 
             "max-time = 5",
             "request = POST",
             "url = " + HTTP_URL,
-            "header = Authorization: Bearer " + token,
             "header = Content-Type: application/json",
             "header = Idempotency-Key: " + key,
             "data-raw = " + raw.decode(),
@@ -64,7 +63,7 @@ async def post_plan(token: str, tick: int, plan: dict[str, Any], dry_run: bool, 
                 config_path = f.name
             os.chmod(config_path, 0o600)
             completed = subprocess.run(
-                ["curl", "--config", config_path, "--write-out", "\\n__ARENA_STATUS__:%{http_code}"],
+                ["curl", "--config", config_path, "--header", "Authorization: Bearer " + token, "--write-out", "\\n__ARENA_STATUS__:%{http_code}"],
                 text=True, capture_output=True, timeout=8,
                 env={**os.environ, "NO_PROXY": "*", "no_proxy": "*"},
             )
