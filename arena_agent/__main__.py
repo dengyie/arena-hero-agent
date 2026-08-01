@@ -118,7 +118,9 @@ async def run(args: argparse.Namespace) -> int:
                 raise ProtocolError("websockets.connect unavailable")
             async with connector as ws:
                 backoff = 0.5
+                saw_message = False
                 async for raw in ws:
+                    saw_message = True
                     msg = json.loads(raw)
                     kind = msg.get("type")
                     if kind == "tick":
@@ -137,7 +139,10 @@ async def run(args: argparse.Namespace) -> int:
                     elif kind == "received":
                         journal.write("received", session=session_id, data=msg.get("data"))
                     else:
-                        journal.write("unknown_message", data=msg)
+                        journal.write("unknown_message", session=session_id, data=msg)
+                if saw_message:
+                    journal.write("session_end", session=session_id, reason="ws_closed")
+                    return 43
         except KeyboardInterrupt:
             return 0
         except PermanentAuthError as exc:
