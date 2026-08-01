@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import subprocess
+import tempfile
 import time
 from typing import Any
 from urllib.request import Request, ProxyHandler, build_opener
@@ -56,11 +57,23 @@ async def post_plan(token: str, tick: int, plan: dict[str, Any], dry_run: bool, 
         if csrf:
             config_lines.append("header = X-CSRF-Token: " + csrf)
         config = "\n".join(config_lines) + "\n"
-        completed = subprocess.run(
-            ["curl", "--config", "-", "--write-out", "\\n__ARENA_STATUS__:%{http_code}"],
-            input=config, text=True, capture_output=True, timeout=8,
-            env={**os.environ, "NO_PROXY": "*", "no_proxy": "*"},
-        )
+        config_path = ""
+        try:
+            with tempfile.NamedTemporaryFile(prefix="arena-curl-", mode="w", encoding="utf-8", delete=False) as f:
+                f.write(config)
+                config_path = f.name
+            os.chmod(config_path, 0o600)
+            completed = subprocess.run(
+                ["curl", "--config", config_path, "--write-out", "\\n__ARENA_STATUS__:%{http_code}"],
+                text=True, capture_output=True, timeout=8,
+                env={**os.environ, "NO_PROXY": "*", "no_proxy": "*"},
+            )
+        finally:
+            if config_path:
+                try:
+                    os.unlink(config_path)
+                except FileNotFoundError:
+                    pass
         if completed.returncode != 0:
             raise RuntimeError("curl command failed: " + completed.stderr[:200])
         body, marker, status = completed.stdout.rpartition("\n__ARENA_STATUS__:")
