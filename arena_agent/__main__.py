@@ -56,7 +56,7 @@ async def post_plan(token: str, tick: int, plan: dict[str, Any], dry_run: bool, 
                                    env={**os.environ, "NO_PROXY": "*", "no_proxy": "*"})
         if completed.returncode != 0:
             raise RuntimeError("curl command failed: " + completed.stderr[:200])
-        body, marker, status = completed.stdout.rpartition("\\n__ARENA_STATUS__:")
+        body, marker, status = completed.stdout.rpartition("\n__ARENA_STATUS__:")
         if not marker:
             raise RuntimeError("curl response missing status")
         return {"status": int(status.strip()), "body": json.loads(body or "{}")}
