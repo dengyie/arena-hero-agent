@@ -1,5 +1,8 @@
+import asyncio
 import unittest
+from unittest.mock import patch
 from arena_agent.model import snapshot_from_state
+from arena_agent.__main__ import PermanentAuthError, post_plan
 from arena_agent.policy import economy_plan, first_step
 
 class AgentTests(unittest.TestCase):
@@ -34,5 +37,15 @@ class AgentTests(unittest.TestCase):
     def test_respawning_waits(self):
         s = self.state(status="RESPAWNING")
         self.assertEqual(economy_plan(s).unit_actions, {})
+
+    def test_command_auth_failure_is_permanent(self):
+        async def run():
+            with patch("arena_agent.__main__.subprocess.run") as mocked:
+                mocked.return_value = type("Completed", (), {
+                    "returncode": 0, "stdout": "401", "stderr": ""
+                })()
+                with self.assertRaises(PermanentAuthError):
+                    await post_plan("token", 9, {"unit_actions": {}}, False)
+        asyncio.run(run())
 
 if __name__ == "__main__": unittest.main()

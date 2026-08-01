@@ -22,6 +22,7 @@ HTTP_URL = "https://api.arenahero.io/api/v1/game/commands"
 DIRECT_HTTP = build_opener(ProxyHandler({}))
 
 class ProtocolError(RuntimeError): pass
+class PermanentAuthError(RuntimeError): pass
 
 async def post_plan(token: str, tick: int, plan: dict[str, Any], dry_run: bool, cookie: str = "", csrf: str = "") -> dict[str, Any]:
     body = {"tick": tick, **plan}
@@ -71,7 +72,10 @@ async def post_plan(token: str, tick: int, plan: dict[str, Any], dry_run: bool, 
                     pass
         if not status.isdigit():
             raise RuntimeError("curl response missing status")
-        return {"status": int(status), "body": json.loads(body or "{}")}
+        result = {"status": int(status), "body": json.loads(body or "{}")}
+        if result["status"] in (401, 403):
+            raise PermanentAuthError(f"command authentication rejected status={result['status']}")
+        return result
     return await asyncio.to_thread(send)
 
 async def run(args: argparse.Namespace) -> int:
@@ -100,6 +104,8 @@ async def run(args: argparse.Namespace) -> int:
         headers["X-CSRF-Token"] = csrf
     ticks = 0
     backoff = 0.5
+    session_id = hashlib.sha256(f"{time.time_ns()}".encode()).hexdigest()[:12]
+    journal.write("session_start", session=session_id, dry_run=args.dry_run)
     while args.max_ticks <= 0 or ticks < args.max_ticks:
         try:
             if hasattr(websockets, "connect"):
@@ -133,8 +139,11 @@ async def run(args: argparse.Namespace) -> int:
                         journal.write("unknown_message", data=msg)
         except KeyboardInterrupt:
             return 0
+        except PermanentAuthError as exc:
+            journal.write("session_end", session=session_id, reason="permanent_auth", error=str(exc))
+            return 42
         except Exception as exc:
-            journal.write("connection_error", error=repr(exc), backoff=backoff)
+            journal.write("connection_error", session=session_id, error=repr(exc), backoff=backoff)
             if args.max_ticks > 0 and ticks >= args.max_ticks:
                 return 1
             await asyncio.sleep(backoff)
