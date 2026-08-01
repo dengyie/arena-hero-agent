@@ -1,0 +1,15 @@
+{
+  "tick": 1,
+  "state": {
+    "status": "ACTIVE",
+    "resources": 5,
+    "population": 1,
+    "objects": [
+      {"kind": "CORE", "id": "00000000-0000-0000-0000-000000000001", "controlled": true, "position": [0, 0], "hp": 5, "shield": 5},
+      {"kind": "UNIT", "id": "00000000-0000-0000-0000-000000000002", "controlled": true, "position": [2, 0], "unit_type": "WORKER", "cargo": 0},
+      {"kind": "RESOURCE", "positions": [[2, 2]]},
+      {"kind": "OBSTACLE", "positions": [[1, 0]]}
+    ],
+    "events": []
+  }
+}
