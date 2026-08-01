@@ -41,34 +41,19 @@ async def post_plan(token: str, tick: int, plan: dict[str, Any], dry_run: bool, 
         # curl's system TLS/HTTP fingerprint is accepted by the edge where
         # Python's urllib client is challenged. Secrets stay in curl config
         # stdin and never appear in argv or the journal.
-        body_path = ""
-        try:
-            with tempfile.NamedTemporaryFile(prefix="arena-body-", mode="wb", delete=False) as f:
-                f.write(raw)
-                body_path = f.name
-            os.chmod(body_path, 0o600)
-            headers = [
-                "Content-Type: application/json",
-                "Idempotency-Key: " + key,
-            ]
-            if cookie:
-                headers += ["Cookie: " + cookie, "Origin: https://app.arenahero.io"]
-            if csrf:
-                headers.append("X-CSRF-Token: " + csrf)
-            cmd = ["curl", "--noproxy", "*", "--silent", "--show-error", "--max-time", "5",
-                   "--request", "POST", "--url", HTTP_URL,
-                   "--header", "Authorization: Bearer " + token]
-            for header in headers:
-                cmd += ["--header", header]
-            cmd += ["--data-binary", "@" + body_path, "--write-out", "\\n__ARENA_STATUS__:%{http_code}"]
-            completed = subprocess.run(cmd, text=True, capture_output=True, timeout=8,
-                                       env={**os.environ, "NO_PROXY": "*", "no_proxy": "*"})
-        finally:
-            if body_path:
-                try:
-                    os.unlink(body_path)
-                except FileNotFoundError:
-                    pass
+        cmd = ["curl", "--noproxy", "*", "--silent", "--show-error", "--max-time", "5",
+               "--request", "POST", "--url", HTTP_URL,
+               "--header", "Authorization: Bearer " + token,
+               "--header", "Content-Type: application/json",
+               "--header", "Idempotency-Key: " + key,
+               "--data-raw", raw.decode(),
+               "--write-out", "\\n__ARENA_STATUS__:%{http_code}"]
+        if cookie:
+            cmd += ["--header", "Cookie: " + cookie, "--header", "Origin: https://app.arenahero.io"]
+        if csrf:
+            cmd += ["--header", "X-CSRF-Token: " + csrf]
+        completed = subprocess.run(cmd, text=True, capture_output=True, timeout=8,
+                                   env={**os.environ, "NO_PROXY": "*", "no_proxy": "*"})
         if completed.returncode != 0:
             raise RuntimeError("curl command failed: " + completed.stderr[:200])
         body, marker, status = completed.stdout.rpartition("\\n__ARENA_STATUS__:")
