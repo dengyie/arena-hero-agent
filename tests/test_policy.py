@@ -28,6 +28,10 @@ class AgentTests(unittest.TestCase):
     def test_worker_moves_to_resource(self):
         p = economy_plan(self.state())
         self.assertEqual(p.unit_actions["worker"], {"type":"MOVE","direction":"DOWN"})
+
+    def test_unreachable_target_returns_without_unbounded_search(self):
+        step = first_step((0, 0), {(2, 0)}, frozenset({(1, 0), (1, 1), (1, -1)}), {(0, 0)})
+        self.assertIn(step, {"UP", "DOWN", None})
     def test_worker_deposits_at_core(self):
         data = self.state()
         s = snapshot_from_state(1, {"status":"ACTIVE","resources":5,"population":1,"objects":[

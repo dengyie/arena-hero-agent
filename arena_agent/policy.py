@@ -23,12 +23,24 @@ class Plan:
 def first_step(start: Position, goals: set[Position], obstacles: frozenset[Position], occupied: set[Position]) -> str | None:
     if start in goals:
         return None
+    # The arena grid is unbounded from the agent's perspective, but a visible
+    # target must be reachable through a bounded local corridor.  The old BFS
+    # expanded forever when a visible target was sealed off, causing OOM after
+    # the first state frame.
+    points = set(goals) | set(obstacles) | set(occupied) | {start}
+    min_x = min(x for x, _ in points) - 32
+    max_x = max(x for x, _ in points) + 32
+    min_y = min(y for _, y in points) - 32
+    max_y = max(y for _, y in points) + 32
+    max_nodes = 20_000
     q = deque([(start, None)])
     seen = {start}
-    while q:
+    while q and len(seen) <= max_nodes:
         cur, first = q.popleft()
         for direction, delta in DIRECTIONS.items():
             nxt = cur[0] + delta[0], cur[1] + delta[1]
+            if not (min_x <= nxt[0] <= max_x and min_y <= nxt[1] <= max_y):
+                continue
             if nxt in seen or nxt in obstacles or (nxt in occupied and nxt not in goals):
                 continue
             step = first or direction
@@ -37,6 +49,8 @@ def first_step(start: Position, goals: set[Position], obstacles: frozenset[Posit
             seen.add(nxt)
             q.append((nxt, step))
     return None
+
+
 
 
 def economy_plan(state: Snapshot) -> Plan:
