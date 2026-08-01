@@ -13,4 +13,11 @@ class Journal:
         row = {"event": event, **data}
         with self.path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
-        logging.getLogger("arena_agent").info("%s %s", event, data)
+        meta = {
+            key: data[key]
+            for key in ("session", "tick", "reason")
+            if key in data
+        }
+        if event == "plan" and isinstance(data.get("result"), dict):
+            meta["status"] = data["result"].get("status", data["result"].get("dry_run"))
+        logging.getLogger("arena_agent").info("%s %s", event, meta)

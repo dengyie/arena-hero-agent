@@ -132,7 +132,43 @@ async def run(args: argparse.Namespace) -> int:
                         snapshot = snapshot_from_state(tick, msg["data"])
                         plan = economy_plan(snapshot)
                         result = await post_plan(token, tick, plan.as_dict(), args.dry_run, cookie, csrf)
-                        journal.write("plan", session=session_id, tick=tick, state=msg["data"], plan=plan.as_dict(), result=result)
+                        raw_state = msg["data"]
+                        state_summary = {
+                            "status": raw_state.get("status"),
+                            "resources": raw_state.get("resources"),
+                            "population": raw_state.get("population"),
+                            "population_tier": raw_state.get("population_tier"),
+                            "objects": {
+                                "total": len(raw_state.get("objects", [])),
+                                "controlled_units": [
+                                    {
+                                        "id": obj.get("id"),
+                                        "unit_type": obj.get("unit_type"),
+                                        "position": obj.get("position"),
+                                        "cargo": obj.get("cargo", 0),
+                                    }
+                                    for obj in raw_state.get("objects", [])
+                                    if obj.get("kind") == "UNIT" and obj.get("controlled")
+                                ],
+                                "controlled_core": [
+                                    {"id": obj.get("id"), "position": obj.get("position")}
+                                    for obj in raw_state.get("objects", [])
+                                    if obj.get("kind") == "CORE" and obj.get("controlled")
+                                ],
+                                "resource_positions": sum(
+                                    len(obj.get("positions", []))
+                                    for obj in raw_state.get("objects", [])
+                                    if obj.get("kind") == "RESOURCE"
+                                ),
+                                "obstacle_positions": sum(
+                                    len(obj.get("positions", []))
+                                    for obj in raw_state.get("objects", [])
+                                    if obj.get("kind") == "OBSTACLE"
+                                ),
+                            },
+                            "events": raw_state.get("events", []),
+                        }
+                        journal.write("plan", session=session_id, tick=tick, state=state_summary, plan=plan.as_dict(), result=result)
                         ticks += 1
                         if args.max_ticks > 0 and ticks >= args.max_ticks:
                             return 0

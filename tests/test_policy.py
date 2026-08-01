@@ -4,6 +4,7 @@ from unittest.mock import patch
 from arena_agent.model import snapshot_from_state
 from arena_agent.__main__ import PermanentAuthError, post_plan
 from arena_agent.policy import economy_plan, first_step
+from arena_agent.journal import Journal
 
 class AgentTests(unittest.TestCase):
     def state(self, **kw):
@@ -41,6 +42,15 @@ class AgentTests(unittest.TestCase):
     def test_respawning_waits(self):
         s = self.state(status="RESPAWNING")
         self.assertEqual(economy_plan(s).unit_actions, {})
+
+    def test_journal_does_not_log_full_state_to_python_log(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            j = Journal(f"{d}/journal.jsonl")
+            j.write("plan", session="s", tick=1,
+                    state={"status": "ACTIVE", "objects": {"total": 1}},
+                    plan={"unit_actions": {}}, result={"status": 202})
+            self.assertIn('"objects":{"total":1}', open(f"{d}/journal.jsonl").read())
 
     def test_command_auth_failure_is_permanent(self):
         async def run():
