@@ -40,22 +40,27 @@ async def post_plan(token: str, tick: int, plan: dict[str, Any], dry_run: bool, 
         # curl's system TLS/HTTP fingerprint is accepted by the edge where
         # Python's urllib client is challenged. Secrets stay in curl config
         # stdin and never appear in argv or the journal.
-        config = "\n".join([
-            "--silent", "--show-error", "--max-time", "5",
-            "--request", "POST", "--url", HTTP_URL,
-            "--header", "Authorization: Bearer " + token,
-            "--header", "Content-Type: application/json",
-            "--header", "Idempotency-Key: " + key,
-            "--data-raw", raw.decode(),
-        ]) + "\n"
+        config_lines = [
+            "silent = true",
+            "show-error = true",
+            "max-time = 5",
+            "request = POST",
+            "url = " + HTTP_URL,
+            "header = Authorization: Bearer " + token,
+            "header = Content-Type: application/json",
+            "header = Idempotency-Key: " + key,
+            "data-raw = " + raw.decode(),
+        ]
         if cookie:
-            config += "--header\nCookie: " + cookie + "\n--header\nOrigin: https://app.arenahero.io\n"
+            config_lines += ["header = Cookie: " + cookie, "header = Origin: https://app.arenahero.io"]
         if csrf:
-            config += "--header\nX-CSRF-Token: " + csrf + "\n"
-        config += "--write-out\n\\n__ARENA_STATUS__:%{http_code}\n"
-        completed = subprocess.run(["curl", "--config", "-"], input=config,
-                                    text=True, capture_output=True, timeout=8,
-                                    env={**os.environ, "NO_PROXY": "*", "no_proxy": "*"})
+            config_lines.append("header = X-CSRF-Token: " + csrf)
+        config = "\n".join(config_lines) + "\n"
+        completed = subprocess.run(
+            ["curl", "--config", "-", "--write-out", "\\n__ARENA_STATUS__:%{http_code}"],
+            input=config, text=True, capture_output=True, timeout=8,
+            env={**os.environ, "NO_PROXY": "*", "no_proxy": "*"},
+        )
         if completed.returncode != 0:
             raise RuntimeError("curl command failed: " + completed.stderr[:200])
         body, marker, status = completed.stdout.rpartition("\n__ARENA_STATUS__:")
