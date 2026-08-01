@@ -40,8 +40,7 @@ async def post_plan(token: str, tick: int, plan: dict[str, Any], dry_run: bool, 
         # curl's system TLS/HTTP fingerprint is accepted by the edge where
         # Python's urllib client is challenged. Secrets stay in curl config
         # stdin and never appear in argv or the journal.
-        config = "--noproxy=*\n"
-        config += "\n".join([
+        config = "\n".join([
             "--silent", "--show-error", "--max-time", "5",
             "--request", "POST", "--url", HTTP_URL,
             "--header", "Authorization: Bearer " + token,
@@ -55,7 +54,8 @@ async def post_plan(token: str, tick: int, plan: dict[str, Any], dry_run: bool, 
             config += "--header\nX-CSRF-Token: " + csrf + "\n"
         config += "--write-out\n\\n__ARENA_STATUS__:%{http_code}\n"
         completed = subprocess.run(["curl", "--config", "-"], input=config,
-                                    text=True, capture_output=True, timeout=8)
+                                    text=True, capture_output=True, timeout=8,
+                                    env={**os.environ, "NO_PROXY": "*", "no_proxy": "*"})
         if completed.returncode != 0:
             raise RuntimeError("curl command failed: " + completed.stderr[:200])
         body, marker, status = completed.stdout.rpartition("\n__ARENA_STATUS__:")
