@@ -123,19 +123,19 @@ async def run(args: argparse.Namespace) -> int:
                     kind = msg.get("type")
                     if kind == "tick":
                         tick = int(msg["data"])
-                        journal.write("tick", tick=tick)
+                        journal.write("tick", session=session_id, tick=tick)
                     elif kind == "state":
                         if "tick" not in locals():
                             raise ProtocolError("state arrived before tick")
                         snapshot = snapshot_from_state(tick, msg["data"])
                         plan = economy_plan(snapshot)
                         result = await post_plan(token, tick, plan.as_dict(), args.dry_run, cookie, csrf)
-                        journal.write("plan", tick=tick, state=msg["data"], plan=plan.as_dict(), result=result)
+                        journal.write("plan", session=session_id, tick=tick, state=msg["data"], plan=plan.as_dict(), result=result)
                         ticks += 1
                         if args.max_ticks > 0 and ticks >= args.max_ticks:
                             return 0
                     elif kind == "received":
-                        journal.write("received", data=msg.get("data"))
+                        journal.write("received", session=session_id, data=msg.get("data"))
                     else:
                         journal.write("unknown_message", data=msg)
         except KeyboardInterrupt:
@@ -144,7 +144,11 @@ async def run(args: argparse.Namespace) -> int:
             journal.write("session_end", session=session_id, reason="permanent_auth", error=str(exc))
             return 42
         except Exception as exc:
-            journal.write("connection_error", session=session_id, error=repr(exc), backoff=backoff)
+            text = repr(exc)
+            if "status_code=401" in text or "status_code=403" in text or "Unauthorized" in text or "Forbidden" in text:
+                journal.write("session_end", session=session_id, reason="ws_auth", error=text)
+                return 42
+            journal.write("connection_error", session=session_id, error=text, backoff=backoff)
             if args.max_ticks > 0 and ticks >= args.max_ticks:
                 return 1
             await asyncio.sleep(backoff)
