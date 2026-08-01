@@ -20,7 +20,7 @@ HTTP_URL = "https://api.arenahero.io/api/v1/game/commands"
 
 class ProtocolError(RuntimeError): pass
 
-async def post_plan(token: str, tick: int, plan: dict[str, Any], dry_run: bool, cookie: str = "") -> dict[str, Any]:
+async def post_plan(token: str, tick: int, plan: dict[str, Any], dry_run: bool, cookie: str = "", csrf: str = "") -> dict[str, Any]:
     body = {"tick": tick, **plan}
     if dry_run:
         return {"dry_run": True, "body": body}
@@ -32,6 +32,8 @@ async def post_plan(token: str, tick: int, plan: dict[str, Any], dry_run: bool, 
     if cookie:
         req.add_header("Cookie", cookie)
         req.add_header("Origin", "https://app.arenahero.io")
+    if csrf:
+        req.add_header("X-CSRF-Token", csrf)
     def send() -> dict[str, Any]:
         with urlopen(req, timeout=5) as response:
             return {"status": response.status, "body": json.loads(response.read().decode())}
@@ -51,6 +53,7 @@ async def run(args: argparse.Namespace) -> int:
         raise SystemExit("install requirements.txt first") from exc
     token = os.environ.get("ARENA_HERO_TOKEN", "")
     cookie = os.environ.get("ARENA_HERO_COOKIE", "")
+    csrf = os.environ.get("ARENA_HERO_CSRF", "")
     if not args.dry_run and not token and not cookie:
         raise SystemExit("ARENA_HERO_TOKEN or ARENA_HERO_COOKIE is required for --live")
     journal = Journal(args.journal)
@@ -58,6 +61,8 @@ async def run(args: argparse.Namespace) -> int:
     if cookie:
         headers["Cookie"] = cookie
         headers["Origin"] = "https://app.arenahero.io"
+    if csrf:
+        headers["X-CSRF-Token"] = csrf
     ticks = 0
     backoff = 0.5
     while args.max_ticks <= 0 or ticks < args.max_ticks:
@@ -82,7 +87,7 @@ async def run(args: argparse.Namespace) -> int:
                             raise ProtocolError("state arrived before tick")
                         snapshot = snapshot_from_state(tick, msg["data"])
                         plan = economy_plan(snapshot)
-                        result = await post_plan(token, tick, plan.as_dict(), args.dry_run, cookie)
+                        result = await post_plan(token, tick, plan.as_dict(), args.dry_run, cookie, csrf)
                         journal.write("plan", tick=tick, state=msg["data"], plan=plan.as_dict(), result=result)
                         ticks += 1
                         if args.max_ticks > 0 and ticks >= args.max_ticks:
