@@ -40,8 +40,9 @@ async def post_plan(token: str, tick: int, plan: dict[str, Any], dry_run: bool, 
         # curl's system TLS/HTTP fingerprint is accepted by the edge where
         # Python's urllib client is challenged. Secrets stay in curl config
         # stdin and never appear in argv or the journal.
-        config = "\n".join([
-            "--noproxy", "*", "--silent", "--show-error", "--max-time", "5",
+        config = "--noproxy=*\n"
+        config += "\n".join([
+            "--silent", "--show-error", "--max-time", "5",
             "--request", "POST", "--url", HTTP_URL,
             "--header", "Authorization: Bearer " + token,
             "--header", "Content-Type: application/json",
