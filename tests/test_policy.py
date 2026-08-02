@@ -67,6 +67,34 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(p.policy_state, "DEPOSIT")
         self.assertEqual(p.unit_actions["worker"], {"type": "DEPOSIT"})
 
+    def test_exploration_starts_at_medium_range(self):
+        s = snapshot_from_state(1, {
+            "status": "ACTIVE", "resources": 5, "population": 1,
+            "objects": [
+                {"kind": "CORE", "id": "core", "controlled": True, "position": [10, 10]},
+                {"kind": "UNIT", "id": "worker", "controlled": True,
+                 "position": [10, 10], "unit_type": "WORKER", "cargo": 0},
+            ], "events": []})
+        mem = ExplorationMemory()
+        p = economy_plan(s, mem)
+        self.assertEqual(p.policy_state, "EXPLORE")
+        self.assertGreaterEqual(abs(p.waypoint[0] - 10) + abs(p.waypoint[1] - 10), 9)
+
+    def test_return_home_uses_permanent_obstacle_memory(self):
+        mem = ExplorationMemory(permanent_obstacles={(1, 0)})
+        # The obstacle is intentionally absent from this current frame: return
+        # planning must retain the previously observed obstacle and go around.
+        s = snapshot_from_state(2, {
+            "status": "ACTIVE", "resources": 5, "population": 1,
+            "objects": [
+                {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]},
+                {"kind": "UNIT", "id": "worker", "controlled": True,
+                 "position": [2, 0], "unit_type": "WORKER", "cargo": 1},
+            ], "events": []})
+        p = economy_plan(s, mem)
+        self.assertEqual(p.policy_state, "RETURN_CORE")
+        self.assertIn(p.unit_actions["worker"]["direction"], {"UP", "DOWN"})
+
     def test_unreachable_target_returns_without_unbounded_search(self):
         step = first_step((0, 0), {(2, 0)}, frozenset({(1, 0), (1, 1), (1, -1)}), {(0, 0)})
         self.assertIn(step, {"UP", "DOWN", None})

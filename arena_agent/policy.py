@@ -7,7 +7,10 @@ from typing import Any
 from .model import Position, Snapshot, Unit
 
 RESOURCE_TTL_TICKS = 8
-WAYPOINT_RADII = (3, 5, 7, 9, 11, 13, 15)
+# Keep the Worker out of the immediate Core neighborhood.  Each square ring
+# is sampled every six cells, matching the Worker view diameter closely while
+# expanding coverage at medium/far range.
+WAYPOINT_RADII = (9, 15, 21, 27, 33)
 DIRECTIONS: dict[str, Position] = {
     "UP": (0, -1), "DOWN": (0, 1), "LEFT": (-1, 0), "RIGHT": (1, 0)
 }
@@ -29,6 +32,7 @@ class ExplorationMemory:
     active_target: Position | None = None
     policy_state: str = "BOOT"
     last_event_types: tuple[str, ...] = ()
+    route_core: Position | None = None
 
     def observe(self, state: Snapshot) -> None:
         self.permanent_obstacles.update(state.obstacle_cells)
@@ -58,15 +62,29 @@ class ExplorationMemory:
                 self.waypoint_index += 1
 
     def ensure_waypoints(self, core: Position | None) -> None:
-        if core is None or self.waypoints:
+        if core is None:
             return
+        if self.route_core != core:
+            self.waypoints.clear()
+            self.waypoint_index = 0
+            self.active_target = None
+            self.route_core = core
+        if self.waypoints:
+            return
+        # Deterministic square-ring serpentine route.  Corners and midpoints
+        # put the Worker view over medium/far sectors instead of orbiting Core.
         for radius in WAYPOINT_RADII:
-            self.waypoints.extend([
-                (core[0], core[1] - radius),
-                (core[0] + radius, core[1]),
-                (core[0], core[1] + radius),
-                (core[0] - radius, core[1]),
-            ])
+            ring = []
+            for x in range(core[0] - radius, core[0] + radius + 1, 6):
+                ring.append((x, core[1] - radius))
+            for y in range(core[1] - radius + 6, core[1] + radius + 1, 6):
+                ring.append((core[0] + radius, y))
+            for x in range(core[0] + radius - 6, core[0] - radius - 1, -6):
+                ring.append((x, core[1] + radius))
+            for y in range(core[1] + radius - 6, core[1] - radius, -6):
+                ring.append((core[0] - radius, y))
+            self.waypoints.extend(ring)
+        self.waypoints = list(dict.fromkeys(self.waypoints))
 
     def next_waypoint(self, state: Snapshot, worker: Unit) -> Position | None:
         self.ensure_waypoints(state.core_position)
@@ -106,16 +124,23 @@ class Plan:
 
 
 def first_step(start: Position, goals: set[Position], obstacles: frozenset[Position], occupied: set[Position]) -> str | None:
-    if start in goals:
+    """Bounded BFS from the actual current position to a target.
+
+    The goals stay passable (a Core/resource can be occupied); every other
+    occupied cell and every known obstacle is avoided.  The search envelope is
+    built from *start and target*, so return paths work after long exploration.
+    """
+    if not goals or start in goals:
         return None
     points = set(goals) | set(obstacles) | set(occupied) | {start}
-    min_x = min(x for x, _ in points) - 32
-    max_x = max(x for x, _ in points) + 32
-    min_y = min(y for _, y in points) - 32
-    max_y = max(y for _, y in points) + 32
+    margin = 40
+    min_x = min(x for x, _ in points) - margin
+    max_x = max(x for x, _ in points) + margin
+    min_y = min(y for _, y in points) - margin
+    max_y = max(y for _, y in points) + margin
     q = deque([(start, None)])
     seen = {start}
-    while q and len(seen) <= 20_000:
+    while q and len(seen) <= 30_000:
         cur, first = q.popleft()
         for direction, delta in DIRECTIONS.items():
             nxt = cur[0] + delta[0], cur[1] + delta[1]
@@ -135,6 +160,8 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
     memory = memory or ExplorationMemory()
     memory.observe(state)
     memory.apply_events(state.events)
+    memory.ensure_waypoints(state.core_position)
+    known_obstacles = frozenset(memory.permanent_obstacles | set(state.obstacle_cells))
     actions: dict[str, dict[str, Any]] = {}
     if state.status != "ACTIVE":
         memory.policy_state = "PAUSE"
@@ -154,7 +181,7 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
                         last_event_types=memory.last_event_types)
         memory.policy_state = "RETURN_CORE"
         direction = first_step(worker.position, {state.core_position} if state.core_position else set(),
-                               state.obstacle_cells, occupied)
+                               known_obstacles, occupied)
         actions[worker.id] = {"type": "MOVE", "direction": direction} if direction else {"type": "WAIT"}
         return Plan(actions, policy_state=memory.policy_state, active_target=state.core_position,
                     last_event_types=memory.last_event_types)
@@ -168,7 +195,7 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
             actions[worker.id] = {"type": "HARVEST"}
         else:
             memory.policy_state = "TO_RESOURCE"
-            direction = first_step(worker.position, {target}, state.obstacle_cells, occupied)
+            direction = first_step(worker.position, {target}, known_obstacles, occupied)
             actions[worker.id] = {"type": "MOVE", "direction": direction} if direction else {"type": "WAIT"}
         return Plan(actions, policy_state=memory.policy_state, active_target=target,
                     last_event_types=memory.last_event_types)
@@ -179,7 +206,7 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
             memory.waypoint_index += 1
             waypoint = memory.next_waypoint(state, worker)
         memory.policy_state = "EXPLORE"
-        direction = first_step(worker.position, {waypoint} if waypoint else set(), memory.permanent_obstacles, occupied)
+        direction = first_step(worker.position, {waypoint} if waypoint else set(), known_obstacles, occupied)
         actions[worker.id] = {"type": "MOVE", "direction": direction} if direction else {"type": "WAIT"}
         return Plan(actions, policy_state=memory.policy_state, waypoint=waypoint,
                     last_event_types=memory.last_event_types)
