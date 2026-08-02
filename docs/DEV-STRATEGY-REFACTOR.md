@@ -1,6 +1,6 @@
 # Arena Hero 策略重构主契约
 
-状态：已定稿，待策略开发授权
+状态：已开发，待 CI 与线上事件验证。
 日期：2026-08-03
 权威运行基线：`Note/Infra/pxed 挂机脚本运维手册.md` 的 `5. Arena Hero Agent`
 范围：仅 `arena-hero-agent`；仅使用官方 Agent API 私有 state；不操作浏览器、Chrome、囤囤鼠、农场或其他 Supervisor 服务。
@@ -232,6 +232,30 @@ D. 至少一个被阻塞 carrier 形成 DEPOSIT_SUCCEEDED
 E. 50 resolved ticks 内 core_full_hold_ticks 有上界，不能长期占主导
 F. RSS、path node cap、非 202、move failure rate 不回归
 ```
+
+### 6.7 本次实现范围（待线上验证）
+
+本次实现只覆盖：
+
+```text
+- 固定 Worker cap 3 → 有界容量 cap 8
+- 3→4→5 满仓 Core 恢复的 synthetic transaction 序列
+- 当前 state 可见敌方对象解析
+- Vanguard 仅对当前可见、正交相邻敌方执行 SWEEP
+```
+
+明确未实现：
+
+```text
+- Ranger SHOOT
+- Vanguard 追击、远距巡逻或主动 scout
+- Beacon
+- Core 迁移
+- 基于历史敌方坐标的攻击
+- 自动生产 Vanguard/Ranger
+```
+
+Vanguard 在没有当前可见相邻敌方时仍为显式 `WAIT`；守卫动作必须以 `SWEEP_RESOLVED` 或后续伤害事件验收，不能以 plan/202 推断命中。
 
 ## 7. 重构后的模块边界
 

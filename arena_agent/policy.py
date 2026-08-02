@@ -20,7 +20,8 @@ PATH_MARGIN = 40
 SPAWN_MIN_RESOURCES = 12
 SPAWN_DEPOSITS_REQUIRED = 3
 SPAWN_WINDOW_TICKS = 20
-MAX_ECONOMY_WORKERS = 3
+MAX_ECONOMY_WORKERS = 8
+CAPACITY_RECOVERY_COOLDOWN = 4
 
 DIRECTIONS: dict[str, Position] = {
     "UP": (0, -1), "DOWN": (0, 1), "LEFT": (-1, 0), "RIGHT": (1, 0)
@@ -184,7 +185,7 @@ class ExplorationMemory:
             elif kind == "CORE_SPAWN_FAILED":
                 # A Core-full recovery must not retry blindly while another
                 # carrier/movement dependency still occupies the Core cell.
-                self.recovery_cooldown_until = max(self.recovery_cooldown_until, state.tick + 4)
+                self.recovery_cooldown_until = max(self.recovery_cooldown_until, state.tick + CAPACITY_RECOVERY_COOLDOWN)
             elif kind == "DEPOSIT_SUCCEEDED":
                 self.core_full = False
                 self.ledger.record_deposit(state.tick)
@@ -338,6 +339,25 @@ class Plan:
         return result
 
 
+def vanguard_guard_actions(state: Snapshot) -> dict[str, dict[str, Any]]:
+    """Sweep only enemies visible in the current state and adjacent to a Vanguard."""
+    actions: dict[str, dict[str, Any]] = {}
+    for vanguard in state.vanguards:
+        adjacent = [
+            enemy for enemy in state.visible_enemies
+            if abs(enemy.position[0] - vanguard.position[0]) + abs(enemy.position[1] - vanguard.position[1]) == 1
+        ]
+        if not adjacent:
+            actions[vanguard.id] = {"type": "WAIT"}
+            continue
+        enemy = min(adjacent, key=lambda item: (item.kind != "UNIT", item.id))
+        dx = enemy.position[0] - vanguard.position[0]
+        dy = enemy.position[1] - vanguard.position[1]
+        direction = next(direction for direction, delta in DIRECTIONS.items() if delta == (dx, dy))
+        actions[vanguard.id] = {"type": "SWEEP", "direction": direction}
+    return actions
+
+
 def _plan(actions: dict[str, dict[str, Any]], memory: ExplorationMemory, *,
           policy_state: str, target: Position | None = None, waypoint: Position | None = None,
           path: PathResult | None = None, core_action: dict[str, Any] | None = None) -> Plan:
@@ -361,6 +381,7 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
     # Explicit safety default for non-Worker units. Manual actions still have
     # official priority over Agent actions on the same tick.
     actions = {unit.id: {"type": "WAIT"} for unit in state.units if unit.unit_type != "WORKER"}
+    actions.update(vanguard_guard_actions(state))
     workers = sorted(state.workers, key=lambda unit: unit.id)
     if not workers:
         core_action = {"type": "SPAWN", "unit_type": "WORKER"} if memory.can_spawn_worker(state) else None
