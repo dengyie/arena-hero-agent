@@ -1,6 +1,6 @@
 # Arena Hero 策略重构主契约
 
-状态：已开发，待 CI 与线上事件验证。
+状态：容量 3→4 已线上事件验证；4→5 与 Vanguard `SWEEP_RESOLVED` 待真实条件验证。
 日期：2026-08-03
 权威运行基线：`Note/Infra/pxed 挂机脚本运维手册.md` 的 `5. Arena Hero Agent`
 范围：仅 `arena-hero-agent`；仅使用官方 Agent API 私有 state；不操作浏览器、Chrome、囤囤鼠、农场或其他 Supervisor 服务。
@@ -256,6 +256,8 @@ F. RSS、path node cap、非 202、move failure rate 不回归
 ```
 
 Vanguard 在没有当前可见相邻敌方时仍为显式 `WAIT`；守卫动作必须以 `SWEEP_RESOLVED` 或后续伤害事件验收，不能以 plan/202 推断命中。
+
+线上已验证容量恢复的首个阶段：当前满仓 `population=3 / resources=15` 状态完成 `CORE_SPAWN_SUCCEEDED`，人口 `3 → 4`、容量 `15 → 20`、资源 `15 → 10 → 11`，并已收到一笔 `DEPOSIT_SUCCEEDED`。当前尚未形成 4→5 满仓条件；当前私有 state 未提供相邻可见敌方，因此守卫未触发，尚无 `SWEEP_RESOLVED` 真实验收。
 
 ## 7. 重构后的模块边界
 
