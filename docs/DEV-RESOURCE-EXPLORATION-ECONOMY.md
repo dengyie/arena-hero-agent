@@ -1,6 +1,6 @@
 # Arena Hero 资源探索与 Worker 经济闭环
 
-状态：待评审（文档阶段，尚未实现）
+状态：历史设计；资源闭环已实现。当前策略以 `docs/DEV-STRATEGY-REFACTOR.md` 和 Obsidian `Note/Infra/pxed 挂机脚本运维手册.md` 的 Arena 章节为准。
 日期：2026-08-02
 范围：Arena Hero Agent 的资源收集与基础经济，不涉及战斗、Beacon 或浏览器自动化
 

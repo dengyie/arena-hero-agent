@@ -1,6 +1,6 @@
 # Arena Hero 策略成熟化设计：从单 Worker 巡航到可持续经济自治
 
-状态：设计完成，待开发授权
+状态：历史成熟化设计；已实现多 Worker、事件账本和保守 Worker 扩张。当前重构与后续路线以 `docs/DEV-STRATEGY-REFACTOR.md` 和 Obsidian Arena 章节为准。
 日期：2026-08-02
 前置：`DEV-RESOURCE-EXPLORATION-ECONOMY.md`、`DEV-NEXT-PHASE-MAP-ECONOMY.md`
 范围：只修改 `arena-hero-agent`。仅使用官方 Agent API 的合法私有 state；不依赖浏览器、Cookie、DOM 或隐藏地图信息。

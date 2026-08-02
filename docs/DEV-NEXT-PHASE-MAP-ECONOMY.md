@@ -1,6 +1,6 @@
 # Arena Hero 下一阶段：持久地图覆盖、全 Worker 经济与可验证运营
 
-状态：规划完成，待实现授权
+状态：历史阶段计划；Phase 0-3 已实装，现行与后续策略以 `docs/DEV-STRATEGY-REFACTOR.md` 和 Obsidian Arena 章节为准。
 日期：2026-08-02
 前置文档：`docs/DEV-RESOURCE-EXPLORATION-ECONOMY.md`
 范围：仅 `arena-hero-agent`；不操作浏览器、不读取浏览器数据、不修改 9223/9224、囤囤鼠、农场或 Supervisor 其他服务。
