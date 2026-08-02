@@ -25,7 +25,7 @@
 → 有界 path planner
 → 持久 frontier / stale candidate 刷新
 → Core 满仓的 Core 级容量事务
-→ 3 Worker 容量上限
+→ 当前生产上限为 3 Worker（已证实不足，待容量控制器批次替换）
 ```
 
 ## 2. 当前产品定义
@@ -76,7 +76,7 @@ cargo > visible resource > frontier 的经济优先级
 资源唯一认领
 stale frontier 刷新
 Core full HOLD / EVICT / RECOVERY / cooldown
-人口上限为 3 Worker
+当前 3 Worker 上限仅为临时护栏，不能冻结为长期策略
 Vanguard/Ranger 显式 WAIT
 token-only 部署与 Arena-only restart
 ```
@@ -112,13 +112,132 @@ CORE_SPAWN_SUCCEEDED
 → Core capacity 提升，Workers 根据最新 state 再次 RETURN_CORE / DEPOSIT
 ```
 
-Worker 上限是 3，不是“无限扩张”。人口 3 时容量为 15；后续是否提高上限必须由维护费、风险、交付吞吐和长窗口证据单独决定。
+当前运行代码的 Worker 上限仍为 3，人口 3 时容量为 15；这只是当前实现的临时护栏，已被线上满仓死锁证据否定。容量控制器批次会用受控上限、冷却与事件门替换它。没有开启 Core 迁移、护盾修复、Beacon、Vanguard scout 或战斗。
 
-## 6. 重构后的模块边界
+## 6. P0：容量控制器替代固定 Worker 上限
+
+### 6.1 已证实的死锁
+
+当前线上 session 已出现以下权威 state：
+
+```text
+population = 3
+resource_capacity = max(10, 3 * 5) = 15
+resources = 15
+3 个 Worker 均 cargo > 0
+其中 1 个位于 Core，另外 2 个在 Core 外
+policy_state = CORE_FULL_HOLD，连续 133 Tick
+```
+
+当前固定 `MAX_ECONOMY_WORKERS = 3` 使 Core 满仓事务无法继续生产，从而无法提高容量；Core 外 carrying Worker 又按正确的锁规则不能争入 Core 格。结果是安全但无收益的确定性死锁。
+
+官方规则确认：人口低于 20 时维护费为 0。因此单纯的 3 Worker 上限不是经济安全条件；容量 `max(10, population * 5)` 与真实 carrying backlog 才是控制输入。
+
+### 6.2 不可采用的方案
+
+| 方案 | 问题 | 结论 |
+|---|---|---|
+| 丢弃 cargo / SELF_DESTRUCT | 已采资源直接损失，且会产生资源堆与额外状态 | 禁止 |
+| 允许全部 carrier 同时进 Core | 会复发 `CELL_UNIT_LIMIT` 和移动依赖失败 | 禁止 |
+| 无限 Worker 扩张 | 人口 >=20 后维护费增长，视野/路径/经济失控 | 禁止 |
+| 固定 cap=3 后永久 HOLD | 已在线上证明会停住整个经济 | 淘汰 |
+| 受控容量控制器 | 仅在 Core 满、存在 backlog、无风险时逐级扩容，并有硬上限/冷却/收益门 | 选用 |
+
+### 6.3 目标容量控制器
+
+容量控制器的目标是把每次实际满仓视作待处理的经济 backlog，而不是永久停机信号：
+
+```text
+Core 满 + carrier backlog
+→ 进行一次 Core 级恢复事务
+→ Worker +1，capacity +5
+→ 等待 spawn / deposit 结果
+→ 下一 state 重新计算 backlog
+→ 未满时恢复依次交付
+→ 仍满且满足安全门时，才允许下一次恢复事务
+```
+
+初始常量，不作为永久承诺：
+
+```text
+MAX_ECONOMY_WORKERS = 8       # 硬内存/复杂度护栏，远低于维护费 tier=20
+CAPACITY_RECOVERY_COOLDOWN = 4 resolved ticks
+MAX_PENDING_CARRIERS = 8      # 指标/异常保护，而非正常期望
+```
+
+理由：Worker 价格 5，人口 8 时容量 40、维护费仍为 0；每次 Worker +1 仅提升容量 5。任何超过 8 的扩张必须在指标窗口证明资源吞吐、Core 风险、路径失败率和 RSS 后单独批准。
+
+### 6.4 Core 事务状态机
+
+状态机只基于当前 state、事件账本和确定性 Worker UUID；不使用旧位置或预期成功推断。
+
+```text
+NORMAL
+  ├─ resources < capacity: 正常 RETURN_CORE / DEPOSIT / economy
+  └─ resources == capacity + carrying backlog: CORE_FULL_LOCK
+
+CORE_FULL_LOCK
+  ├─ Core 格有 2 carrying Workers: CORE_FULL_EVICT
+  │    → 仅 UUID 最大 evictor MOVE；其他 carrier WAIT；无 SPAWN
+  ├─ Core 格有 1 carrying Worker，其他 carrier 在 Core 外:
+  │    → CORE_FULL_RECOVERY
+  │    → leader MOVE 离开 + Core SPAWN WORKER
+  ├─ 无 carrier 在 Core 格:
+  │    → CORE_FULL_STAGING
+  │    → 仅 UUID 最小 carrier 可尝试进入；其余 carrier HOLD
+  ├─ CORE_SPAWN_FAILED / CELL_UNIT_LIMIT:
+  │    → COOLDOWN，重新读下一 state；禁止重放
+  └─ CORE_SPAWN_SUCCEEDED:
+       → 等待下一完整 state，重新从 NORMAL/LOCK 决策
+```
+
+关键规则：
+
+- 一次计划最多一个 Core action；一次恢复事务只允许一个 leader 和一个 Core `SPAWN`。
+- Core 格单位容量约束优先于返程路径吞吐。恢复进行期间，非 leader carrying Worker 必须 `WAIT`，不能向 Core 路径规划。
+- `CORE_FULL_HOLD` 只能是有 tick、有原因、受 duration 指标约束的暂态；超过阈值必须生成明确 `CAPACITY_STALLED` 观测，而不是无限静默 HOLD。
+- 对已经达到 `MAX_ECONOMY_WORKERS` 的真满仓，只允许 HOLD 并记录 `CAPACITY_HARD_LIMIT`；不得私自丢货或扩到未知人口。
+- `CORE_DAMAGED`、`CORE_DESTROYED`、`CORE_MOVING`、非 202、认证错误时冻结新扩容，仅保持官方允许的安全行为。
+
+### 6.5 生产门的拆分
+
+普通生产与满仓容量恢复不能共用一条简单 `can_spawn_worker()`：
+
+| 类型 | 触发 | 资源门 | 风险门 | Core 格门 |
+|---|---|---|---|---|
+| 常规扩张 | 稳定经济提升视野/吞吐 | `resources >= 12`、近期交付充分 | 最近窗口无 Core 风险 | 当前 Core 格无 Unit |
+| 容量恢复 | `resources == capacity` 且 carrying backlog | 本 Tick 资源可支付 Worker 5；交付后/生产前结算按官方顺序 | 无 Core 风险、未冷却 | leader 依状态机撤位，其他 carrier 锁住 |
+
+常规扩张可以在 metrics 成熟后调节；容量恢复是 P0 liveness 保障，必须先实现并以事件验收。
+
+### 6.6 验收矩阵
+
+离线序列必须覆盖：
+
+1. population 3、capacity 15、resources 15、一个 Core carrier + 两个外部 carrier：只 leader `MOVE + SPAWN`，外部 carrier 均 WAIT。
+2. 两 carrier 同格 Core：只一个 evictor MOVE，Core action 为 None。
+3. leader 撤位成功、`CORE_SPAWN_SUCCEEDED` 后，capacity 变为 20；carrier 依 UUID 一次一个返回/交付。
+4. `CORE_SPAWN_FAILED / CELL_UNIT_LIMIT`：至少 4 个 resolved ticks 不重发 SPAWN。
+5. population 8、resources=capacity：不再 SPAWN，输出 `CAPACITY_HARD_LIMIT`。
+6. Core damage/moving/respawn：冻结恢复；新 Core ID 后清理旧 Core transaction。
+7. event 重放不重复启动事务，长期 memory 有上限。
+
+线上分级验收：
+
+```text
+A. 新 session 连续 202 + received
+B. CORE_FULL_* 计划与下一 state 的 MOVE/SPAWN 事件一一对应
+C. CORE_SPAWN_SUCCEEDED 后 capacity 实际增加 5
+D. 至少一个被阻塞 carrier 形成 DEPOSIT_SUCCEEDED
+E. 50 resolved ticks 内 core_full_hold_ticks 有上界，不能长期占主导
+F. RSS、path node cap、非 202、move failure rate 不回归
+```
+
+## 7. 重构后的模块边界
 
 当前 `policy.py` 同时包含状态记忆、路径、frontier、账本和动作决定。继续堆积策略会降低审计性，但一次性大拆分会扰动已验证闭环。采用两阶段重构。
 
-### Phase R1: 无行为变化的内部拆分
+### Phase R1: 容量控制器稳定后，无行为变化的内部拆分
 
 目标：不改变当前动作序列与协议行为，仅建立可单测的边界。
 
@@ -136,7 +255,8 @@ Worker 上限是 3，不是“无限扩张”。人口 3 时容量为 15；后�
 - 先做 characterization tests，锁住既有 synthetic sequence 的 Plan 输出
 - 不改变 policy priority、常量、Worker cap、Core 事务或 journal schema
 - 仅一批重构一个 commit；本地/CI/pxed 暂存通过后才 live
-- R1 上线验收只看协议、动作事件与 RSS 无回归，不追求短期收益提高
+- R1 上线验收只看协议、动作事件与 RSS 无回归，不追求短期收益提高。
+- R1/R2 不得排在 P0 容量控制器之前；当前已发生的 `CORE_FULL_HOLD` 长窗口应先消除。
 ```
 
 ### Phase R2: 指标先行，不先改决策
@@ -174,7 +294,7 @@ runtime:
 规则：
 
 - 统计必须从 `events` 和权威 state 归因；不能从 202、received 或预期 plan 推测成功。
-- journal 只写摘要，不写完整 `state.objects`、凭据或无限历史。
+- 运行 journal 只写摘要，不写完整 `state.objects`、凭据或无限历史；私有 Obsidian 的“私有运行材料（敏感）”段是经用户授权的独立存储，不属于运行 journal，也不得同步到 Git。
 - 指标模块观察期先不影响动作；至少一个可比较的 50 Tick 窗口后才允许调整策略常量。
 
 ## 7. 后续策略调整门
@@ -200,7 +320,7 @@ M2: Vanguard scout，只扩大合法私有视野，不进行进攻
 M3: Beacon 的拾取、持有收益、丢失和风险模型
 M4: Vanguard/Ranger 战斗，目标可见性、射线、伤害和退出策略
 M5: Core 迁移，四 Tick 事务、交付暂停与路径影响
-M6: Worker cap > 3，必须证明维护费、容量和资源吞吐收益
+M6: Worker cap > 8，必须在容量控制器稳定后证明维护费、容量和资源吞吐收益
 ```
 
 每个 M 需要独立设计文档、事件矩阵、synthetic tests、CI、pxed 暂存和 bounded live 验收；不得与 R1/R2 或彼此混合。
