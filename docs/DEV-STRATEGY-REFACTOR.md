@@ -257,7 +257,7 @@ F. RSS、path node cap、非 202、move failure rate 不回归
 
 Vanguard 在没有当前可见相邻敌方时仍为显式 `WAIT`；守卫动作必须以 `SWEEP_RESOLVED` 或后续伤害事件验收，不能以 plan/202 推断命中。
 
-线上已验证容量恢复的首个阶段：当前满仓 `population=3 / resources=15` 状态完成 `CORE_SPAWN_SUCCEEDED`，人口 `3 → 4`、容量 `15 → 20`、资源 `15 → 10 → 11`，并已收到一笔 `DEPOSIT_SUCCEEDED`。当前尚未形成 4→5 满仓条件；当前私有 state 未提供相邻可见敌方，因此守卫未触发，尚无 `SWEEP_RESOLVED` 真实验收。
+线上已验证容量恢复的首个阶段：当前满仓 `population=3 / resources=15` 状态完成 `CORE_SPAWN_SUCCEEDED`，人口 `3 → 4`、容量 `15 → 20`、资源 `15 → 10 → 11`，并已收到一笔 `DEPOSIT_SUCCEEDED`。随后运行已达到当前 `MAX_ECONOMY_WORKERS=8`，权威 state 为 `population=8 / capacity=40 / resources=13`；未满仓且不再自动扩张。当前尚未形成 4→5 单独验收窗口；当前私有 state 未提供相邻可见敌方，因此守卫未触发，尚无 `SWEEP_RESOLVED` 真实验收。
 
 ## 7. 重构后的模块边界
 
