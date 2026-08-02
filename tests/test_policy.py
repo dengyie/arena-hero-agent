@@ -133,6 +133,40 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(p.active_target, (1, 0))
         self.assertEqual(p.unit_actions["worker"], {"type": "MOVE", "direction": "RIGHT"})
 
+    def test_core_full_pauses_deposit_without_dropping_cargo(self):
+        mem = ExplorationMemory()
+        full_event = {
+            "event_id": "full-1", "event_type": "DEPOSIT_FAILED",
+            "reason_code": "CORE_RESOURCE_FULL", "position": [0, 0],
+            "values": {"capacity": 10},
+        }
+        s = snapshot_from_state(2, {"status": "ACTIVE", "resources": 10, "population": 1,
+            "objects": [
+                {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]},
+                {"kind": "UNIT", "id": "worker", "controlled": True,
+                 "position": [0, 0], "unit_type": "WORKER", "cargo": 1},
+            ], "events": [full_event]})
+        p = economy_plan(s, mem)
+        self.assertTrue(mem.core_full)
+        self.assertEqual(p.policy_state, "CORE_FULL")
+        self.assertEqual(p.unit_actions["worker"], {"type": "WAIT"})
+
+    def test_deposit_success_clears_core_full_pause(self):
+        mem = ExplorationMemory(core_full=True)
+        success_event = {
+            "event_id": "deposit-1", "event_type": "DEPOSIT_SUCCEEDED",
+            "position": [0, 0], "values": {"amount": 1, "remaining": 0},
+        }
+        s = snapshot_from_state(3, {"status": "ACTIVE", "resources": 9, "population": 1,
+            "objects": [
+                {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]},
+                {"kind": "UNIT", "id": "worker", "controlled": True,
+                 "position": [0, 0], "unit_type": "WORKER", "cargo": 1},
+            ], "events": [success_event]})
+        p = economy_plan(s, mem)
+        self.assertFalse(mem.core_full)
+        self.assertEqual(p.policy_state, "DEPOSIT")
+
     def test_path_result_reports_no_path_and_node_cap(self):
         no_path = plan_path((0, 0), {(2, 0)}, frozenset({(1, 0), (1, 1), (1, -1)}), set())
         self.assertIn(no_path.status, {"FOUND", "NO_PATH", "NODE_CAP"})

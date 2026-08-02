@@ -87,6 +87,7 @@ class ExplorationMemory:
     active_target: Position | None = None
     policy_state: str = "BOOT"
     last_event_types: tuple[str, ...] = ()
+    core_full: bool = False
     last_path: PathResult | None = None
 
     def observe(self, state: Snapshot) -> None:
@@ -111,6 +112,10 @@ class ExplorationMemory:
                 obs = self.resources.setdefault(pos, ResourceObservation(0))
                 obs.status = "failed"
                 obs.failure_count += 1
+            elif kind == "DEPOSIT_FAILED":
+                self.core_full = event.get("reason_code") == "CORE_RESOURCE_FULL"
+            elif kind == "DEPOSIT_SUCCEEDED":
+                self.core_full = False
             elif kind == "UNIT_MOVE_FAILED" and self.active_target is not None:
                 failures, _ = self.failed_targets.get(self.active_target, (0, 0))
                 # Dynamic movement failure is not a permanent obstacle. Backoff
@@ -266,6 +271,9 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
 
     if worker.cargo > 0:
         if state.core_position and worker.position == state.core_position:
+            if memory.core_full:
+                return _plan({worker.id: {"type": "WAIT"}}, memory,
+                             policy_state="CORE_FULL", target=state.core_position)
             return _plan({worker.id: {"type": "DEPOSIT"}}, memory,
                          policy_state="DEPOSIT", target=state.core_position)
         path = plan_path(worker.position, {state.core_position} if state.core_position else set(),
