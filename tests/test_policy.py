@@ -3,7 +3,11 @@ import unittest
 from unittest.mock import patch
 from arena_agent.model import snapshot_from_state
 from arena_agent.__main__ import PermanentAuthError, post_plan
-from arena_agent.policy import ExplorationMemory, economy_plan, first_step
+from pathlib import Path
+from arena_agent.policy import (
+    ExplorationMemory, MAX_BAND_RADIUS, PATH_NODE_CAP, economy_plan,
+    first_step, plan_path,
+)
 from arena_agent.journal import Journal
 
 class AgentTests(unittest.TestCase):
@@ -94,6 +98,58 @@ class AgentTests(unittest.TestCase):
         p = economy_plan(s, mem)
         self.assertEqual(p.policy_state, "RETURN_CORE")
         self.assertIn(p.unit_actions["worker"]["direction"], {"UP", "DOWN"})
+
+    def test_frontier_expands_without_terminal_exhaustion(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        worker = {"kind": "UNIT", "id": "worker", "controlled": True,
+                  "position": [0, 0], "unit_type": "WORKER", "cargo": 0}
+        mem = ExplorationMemory()
+        s = snapshot_from_state(1, {"status": "ACTIVE", "resources": 5, "population": 1,
+                                     "objects": [core, worker], "events": []})
+        # Exhausting a band must refill the next band, then keep reseeding the
+        # capped band rather than returning the former EXPLORATION_EXHAUSTED.
+        for _ in range(20):
+            mem.frontier_candidates.clear()
+            target, result = mem.next_frontier(s, s.workers[0], frozenset(), set())
+            self.assertIsNotNone(target)
+            self.assertEqual(result.status, "FOUND")
+            mem.active_target = None
+        self.assertGreaterEqual(mem.band_radius, MAX_BAND_RADIUS)
+        p = economy_plan(s, mem)
+        self.assertNotEqual(p.policy_state, "EXPLORATION_EXHAUSTED")
+        self.assertIn(p.policy_state, {"EXPLORE", "NO_FRONTIER"})
+
+    def test_visible_resource_preempts_frontier(self):
+        mem = ExplorationMemory()
+        s = snapshot_from_state(3, {"status": "ACTIVE", "resources": 5, "population": 1,
+            "objects": [
+                {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]},
+                {"kind": "UNIT", "id": "worker", "controlled": True,
+                 "position": [0, 0], "unit_type": "WORKER", "cargo": 0},
+                {"kind": "RESOURCE", "positions": [[1, 0]]},
+            ], "events": []})
+        p = economy_plan(s, mem)
+        self.assertEqual(p.policy_state, "TO_RESOURCE")
+        self.assertEqual(p.active_target, (1, 0))
+        self.assertEqual(p.unit_actions["worker"], {"type": "MOVE", "direction": "RIGHT"})
+
+    def test_path_result_reports_no_path_and_node_cap(self):
+        no_path = plan_path((0, 0), {(2, 0)}, frozenset({(1, 0), (1, 1), (1, -1)}), set())
+        self.assertIn(no_path.status, {"FOUND", "NO_PATH", "NODE_CAP"})
+        capped = plan_path((0, 0), {(10_000, 0)}, frozenset(), set())
+        self.assertIn(capped.status, {"FOUND", "NODE_CAP", "NO_PATH"})
+        self.assertLessEqual(capped.explored_nodes, PATH_NODE_CAP + 4)
+
+    def test_live_deploy_template_is_token_only(self):
+        root = Path(__file__).resolve().parents[1]
+        template = (root / "deploy/supervisor-arena-hero.conf").read_text()
+        deploy = (root / "deploy/pxed-deploy.sh").read_text()
+        self.assertIn("export ARENA_HERO_TOKEN", template)
+        self.assertNotIn("ARENA_HERO_COOKIE", template)
+        self.assertNotIn("ARENA_HERO_CSRF", template)
+        self.assertIn("__ARENA_PYTHON_BIN__", template)
+        self.assertIn("__ARENA_PYTHON_BIN__", deploy)
+        self.assertIn("import websockets", deploy)
 
     def test_unreachable_target_returns_without_unbounded_search(self):
         step = first_step((0, 0), {(2, 0)}, frozenset({(1, 0), (1, 1), (1, -1)}), {(0, 0)})

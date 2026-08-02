@@ -173,6 +173,16 @@ async def run(args: argparse.Namespace) -> int:
                         state_summary["active_target"] = plan.active_target
                         state_summary["waypoint"] = plan.waypoint
                         state_summary["resource_memory_count"] = len(memory.resources)
+                        state_summary["frontier"] = {
+                            "band_radius": plan.band_radius,
+                            "queued": len(memory.frontier_candidates),
+                            "completed": len(memory.completed_targets),
+                            "failed": len(memory.failed_targets),
+                        }
+                        state_summary["path"] = {
+                            "status": plan.path_status,
+                            "nodes": plan.path_nodes,
+                        }
                         state_summary["last_event_types"] = plan.last_event_types
                         journal.write("plan", session=session_id, tick=tick, state=state_summary, plan=plan.as_dict(), result=result)
                         ticks += 1
