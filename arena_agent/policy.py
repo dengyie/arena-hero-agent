@@ -20,6 +20,7 @@ PATH_MARGIN = 40
 SPAWN_MIN_RESOURCES = 12
 SPAWN_DEPOSITS_REQUIRED = 3
 SPAWN_WINDOW_TICKS = 20
+MAX_ECONOMY_WORKERS = 3
 
 DIRECTIONS: dict[str, Position] = {
     "UP": (0, -1), "DOWN": (0, 1), "LEFT": (-1, 0), "RIGHT": (1, 0)
@@ -302,7 +303,7 @@ class ExplorationMemory:
     def can_spawn_worker(self, state: Snapshot, *, allow_core_full_recovery: bool = False) -> bool:
         if state.core_position is None or (self.core_full and not allow_core_full_recovery):
             return False
-        if len(state.workers) >= 2 or state.resources < SPAWN_MIN_RESOURCES:
+        if len(state.workers) >= MAX_ECONOMY_WORKERS or state.resources < SPAWN_MIN_RESOURCES:
             return False
         if len(self.ledger.deposits) < SPAWN_DEPOSITS_REQUIRED or self.ledger.core_damage_ticks:
             return False
@@ -381,10 +382,14 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
                      and (worker.position[0] + delta[0], worker.position[1] + delta[1]) not in occupied),
                     None,
                 )
-                if (recovery_direction and state.resources >= 5 and len(workers) == 1
+                if (recovery_direction and state.resources >= 5
+                        and len(workers) < MAX_ECONOMY_WORKERS
+                        and all(other.position != state.core_position
+                                for other in workers if other.id != worker.id)
                         and not memory.ledger.core_damage_ticks):
                     actions[worker.id] = {"type": "MOVE", "direction": recovery_direction}
                     primary_state = "CORE_FULL_RECOVERY"
+                    primary_target = state.core_position
                 else:
                     actions[worker.id] = {"type": "WAIT"}
                     primary_state = "CORE_FULL"
@@ -438,7 +443,7 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
 
     recovery_spawn = (
         primary_state == "CORE_FULL_RECOVERY"
-        and len(workers) == 1
+        and len(workers) < MAX_ECONOMY_WORKERS
         and state.resources >= 5
         and not memory.ledger.core_damage_ticks
     )

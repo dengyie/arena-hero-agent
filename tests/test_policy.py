@@ -265,7 +265,7 @@ class AgentTests(unittest.TestCase):
         mem.ledger.core_damage_ticks.append(4)
         self.assertIsNone(economy_plan(s, mem).core_action)
 
-    def test_spawn_worker_is_blocked_by_core_occupancy_or_second_worker(self):
+    def test_spawn_worker_is_blocked_by_core_occupancy_or_worker_cap(self):
         mem = ExplorationMemory()
         mem.ledger.deposits.extend([1, 2, 3])
         occupied = snapshot_from_state(4, {"status": "ACTIVE", "resources": 12, "population": 1,
@@ -283,7 +283,19 @@ class AgentTests(unittest.TestCase):
                 {"kind": "UNIT", "id": "worker-b", "controlled": True,
                  "position": [2, 0], "unit_type": "WORKER", "cargo": 0},
             ], "events": []})
-        self.assertIsNone(economy_plan(two_workers, mem).core_action)
+        self.assertEqual(economy_plan(two_workers, mem).core_action,
+                         {"type": "SPAWN", "unit_type": "WORKER"})
+        three_workers = snapshot_from_state(6, {"status": "ACTIVE", "resources": 15, "population": 3,
+            "objects": [
+                {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]},
+                {"kind": "UNIT", "id": "worker-a", "controlled": True,
+                 "position": [1, 0], "unit_type": "WORKER", "cargo": 0},
+                {"kind": "UNIT", "id": "worker-b", "controlled": True,
+                 "position": [2, 0], "unit_type": "WORKER", "cargo": 0},
+                {"kind": "UNIT", "id": "worker-c", "controlled": True,
+                 "position": [3, 0], "unit_type": "WORKER", "cargo": 0},
+            ], "events": []})
+        self.assertIsNone(economy_plan(three_workers, mem).core_action)
 
     def test_core_full_recovery_moves_carrier_and_spawns_worker(self):
         mem = ExplorationMemory()
@@ -299,6 +311,47 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(p.policy_state, "CORE_FULL_RECOVERY")
         self.assertEqual(p.unit_actions["worker"], {"type": "MOVE", "direction": "UP"})
         self.assertEqual(p.core_action, {"type": "SPAWN", "unit_type": "WORKER"})
+
+    def test_two_worker_core_full_recovery_spawns_third_worker(self):
+        mem = ExplorationMemory()
+        full_event = {"event_id": "full-two-worker", "event_type": "DEPOSIT_FAILED",
+                      "reason_code": "CORE_RESOURCE_FULL", "position": [0, 0]}
+        s = snapshot_from_state(9, {"status": "ACTIVE", "resources": 10, "population": 2,
+            "objects": [
+                {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]},
+                {"kind": "UNIT", "id": "carrier", "controlled": True,
+                 "position": [0, 0], "unit_type": "WORKER", "cargo": 1},
+                {"kind": "UNIT", "id": "scout", "controlled": True,
+                 "position": [2, 0], "unit_type": "WORKER", "cargo": 0},
+            ], "events": [full_event]})
+        p = economy_plan(s, mem)
+        self.assertEqual(p.policy_state, "CORE_FULL_RECOVERY")
+        self.assertEqual(p.unit_actions["carrier"], {"type": "MOVE", "direction": "UP"})
+        self.assertEqual(p.core_action, {"type": "SPAWN", "unit_type": "WORKER"})
+
+    def test_core_full_recovery_requires_empty_core_slot_and_worker_cap(self):
+        full_event = {"event_id": "full-guard", "event_type": "DEPOSIT_FAILED",
+                      "reason_code": "CORE_RESOURCE_FULL", "position": [0, 0]}
+        occupied = snapshot_from_state(9, {"status": "ACTIVE", "resources": 10, "population": 2,
+            "objects": [
+                {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]},
+                {"kind": "UNIT", "id": "carrier", "controlled": True,
+                 "position": [0, 0], "unit_type": "WORKER", "cargo": 1},
+                {"kind": "UNIT", "id": "blocker", "controlled": True,
+                 "position": [0, 0], "unit_type": "WORKER", "cargo": 0},
+            ], "events": [full_event]})
+        self.assertIsNone(economy_plan(occupied, ExplorationMemory()).core_action)
+        capped = snapshot_from_state(10, {"status": "ACTIVE", "resources": 15, "population": 3,
+            "objects": [
+                {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]},
+                {"kind": "UNIT", "id": "carrier", "controlled": True,
+                 "position": [0, 0], "unit_type": "WORKER", "cargo": 1},
+                {"kind": "UNIT", "id": "worker-b", "controlled": True,
+                 "position": [1, 0], "unit_type": "WORKER", "cargo": 0},
+                {"kind": "UNIT", "id": "worker-c", "controlled": True,
+                 "position": [2, 0], "unit_type": "WORKER", "cargo": 0},
+            ], "events": [full_event]})
+        self.assertIsNone(economy_plan(capped, ExplorationMemory()).core_action)
 
     def test_core_full_recovery_is_disabled_after_core_damage(self):
         mem = ExplorationMemory()
