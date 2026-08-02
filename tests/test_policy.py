@@ -1,6 +1,6 @@
 import asyncio
 import unittest
-from unittest.mock import patch
+from unittest.mock import mock_open, patch
 from arena_agent.model import snapshot_from_state
 from arena_agent.__main__ import PermanentAuthError, post_plan
 from pathlib import Path
@@ -622,6 +622,19 @@ class AgentTests(unittest.TestCase):
                     plan={"unit_actions": {}}, result={"status": 202})
             from pathlib import Path
             self.assertIn('"objects":{"total":1}', Path(f"{d}/journal.jsonl").read_text())
+
+    def test_tick_mismatch_is_marked_stale_without_hiding_other_conflicts(self):
+        async def run(status: str, body: str):
+            with patch("arena_agent.__main__.subprocess.run") as mocked:
+                mocked.return_value = type("Completed", (), {
+                    "returncode": 0, "stdout": status, "stderr": ""
+                })()
+                with patch("builtins.open", mock_open(read_data=body)):
+                    return await post_plan("token", 9, {"unit_actions": {}}, False)
+        stale = asyncio.run(run("409", '{"accepted":false,"error":"TICK_MISMATCH"}'))
+        conflict = asyncio.run(run("409", '{"accepted":false,"error":"IDEMPOTENCY_CONFLICT"}'))
+        self.assertTrue(stale["stale_tick"])
+        self.assertNotIn("stale_tick", conflict)
 
     def test_command_auth_failure_is_permanent(self):
         async def run():

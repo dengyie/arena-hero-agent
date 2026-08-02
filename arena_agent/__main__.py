@@ -74,6 +74,11 @@ async def post_plan(token: str, tick: int, plan: dict[str, Any], dry_run: bool, 
         if not status.isdigit():
             raise RuntimeError("curl response missing status")
         result = {"status": int(status), "body": json.loads(body or "{}")}
+        if result["status"] == 409 and result["body"].get("error") == "TICK_MISMATCH":
+            # A newly restarted Agent can receive a state for a tick whose
+            # prior process already stored a plan. The slot is closed; wait
+            # for the next tick rather than treating this as a protocol fault.
+            result["stale_tick"] = True
         if result["status"] in (401, 403):
             raise PermanentAuthError(f"command authentication rejected status={result['status']}")
         return result
@@ -197,6 +202,7 @@ async def run(args: argparse.Namespace) -> int:
                             "core_damage_recent": len(memory.ledger.core_damage_ticks),
                         }
                         state_summary["last_event_types"] = plan.last_event_types
+                        state_summary["stale_tick"] = bool(result.get("stale_tick"))
                         journal.write("plan", session=session_id, tick=tick, state=state_summary, plan=plan.as_dict(), result=result)
                         ticks += 1
                         if args.max_ticks > 0 and ticks >= args.max_ticks:
