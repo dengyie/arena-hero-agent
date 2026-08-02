@@ -140,7 +140,7 @@ class AgentTests(unittest.TestCase):
             "reason_code": "CORE_RESOURCE_FULL", "position": [0, 0],
             "values": {"capacity": 10},
         }
-        s = snapshot_from_state(2, {"status": "ACTIVE", "resources": 10, "population": 1,
+        s = snapshot_from_state(2, {"status": "ACTIVE", "resources": 4, "population": 1,
             "objects": [
                 {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]},
                 {"kind": "UNIT", "id": "worker", "controlled": True,
@@ -267,6 +267,39 @@ class AgentTests(unittest.TestCase):
                  "position": [2, 0], "unit_type": "WORKER", "cargo": 0},
             ], "events": []})
         self.assertIsNone(economy_plan(two_workers, mem).core_action)
+
+    def test_core_full_recovery_moves_carrier_and_spawns_worker(self):
+        mem = ExplorationMemory()
+        full_event = {"event_id": "full-recovery", "event_type": "DEPOSIT_FAILED",
+                      "reason_code": "CORE_RESOURCE_FULL", "position": [0, 0]}
+        s = snapshot_from_state(8, {"status": "ACTIVE", "resources": 10, "population": 1,
+            "objects": [
+                {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]},
+                {"kind": "UNIT", "id": "worker", "controlled": True,
+                 "position": [0, 0], "unit_type": "WORKER", "cargo": 1},
+            ], "events": [full_event]})
+        p = economy_plan(s, mem)
+        self.assertEqual(p.policy_state, "CORE_FULL_RECOVERY")
+        self.assertEqual(p.unit_actions["worker"], {"type": "MOVE", "direction": "UP"})
+        self.assertEqual(p.core_action, {"type": "SPAWN", "unit_type": "WORKER"})
+
+    def test_core_full_recovery_is_disabled_after_core_damage(self):
+        mem = ExplorationMemory()
+        events = [
+            {"event_id": "damage", "event_type": "CORE_DAMAGED", "position": [0, 0]},
+            {"event_id": "full-after-damage", "event_type": "DEPOSIT_FAILED",
+             "reason_code": "CORE_RESOURCE_FULL", "position": [0, 0]},
+        ]
+        s = snapshot_from_state(8, {"status": "ACTIVE", "resources": 10, "population": 1,
+            "objects": [
+                {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]},
+                {"kind": "UNIT", "id": "worker", "controlled": True,
+                 "position": [0, 0], "unit_type": "WORKER", "cargo": 1},
+            ], "events": events})
+        p = economy_plan(s, mem)
+        self.assertEqual(p.policy_state, "CORE_FULL")
+        self.assertEqual(p.unit_actions["worker"], {"type": "WAIT"})
+        self.assertIsNone(p.core_action)
 
     def test_path_result_reports_no_path_and_node_cap(self):
         no_path = plan_path((0, 0), {(2, 0)}, frozenset({(1, 0), (1, 1), (1, -1)}), set())

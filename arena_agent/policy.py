@@ -268,8 +268,8 @@ class ExplorationMemory:
                        if self.resources.get(pos, ResourceObservation(state.tick)).status == "visible"),
                       key=lambda pos: (pos[0], pos[1]))
 
-    def can_spawn_worker(self, state: Snapshot) -> bool:
-        if state.core_position is None or self.core_full:
+    def can_spawn_worker(self, state: Snapshot, *, allow_core_full_recovery: bool = False) -> bool:
+        if state.core_position is None or (self.core_full and not allow_core_full_recovery):
             return False
         if len(state.workers) >= 2 or state.resources < SPAWN_MIN_RESOURCES:
             return False
@@ -344,8 +344,19 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
             continue
         if state.core_position and worker.position == state.core_position:
             if memory.core_full:
-                actions[worker.id] = {"type": "WAIT"}
-                primary_state = "CORE_FULL"
+                recovery_direction = next(
+                    (direction for direction, delta in DIRECTIONS.items()
+                     if (worker.position[0] + delta[0], worker.position[1] + delta[1]) not in obstacles
+                     and (worker.position[0] + delta[0], worker.position[1] + delta[1]) not in occupied),
+                    None,
+                )
+                if (recovery_direction and state.resources >= 5 and len(workers) == 1
+                        and not memory.ledger.core_damage_ticks):
+                    actions[worker.id] = {"type": "MOVE", "direction": recovery_direction}
+                    primary_state = "CORE_FULL_RECOVERY"
+                else:
+                    actions[worker.id] = {"type": "WAIT"}
+                    primary_state = "CORE_FULL"
             else:
                 actions[worker.id] = {"type": "DEPOSIT"}
                 primary_state = "DEPOSIT"
@@ -394,7 +405,14 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
             if primary_target is None:
                 primary_state, primary_path = "NO_FRONTIER", path
 
-    core_action = {"type": "SPAWN", "unit_type": "WORKER"} if memory.can_spawn_worker(state) else None
+    recovery_spawn = (
+        primary_state == "CORE_FULL_RECOVERY"
+        and len(workers) == 1
+        and state.resources >= 5
+        and not memory.ledger.core_damage_ticks
+    )
+    core_action = ({"type": "SPAWN", "unit_type": "WORKER"}
+                   if recovery_spawn or memory.can_spawn_worker(state) else None)
     return _plan(actions, memory, policy_state=primary_state, target=primary_target,
                  waypoint=primary_target if primary_state == "EXPLORE" else None,
                  path=primary_path, core_action=core_action)
