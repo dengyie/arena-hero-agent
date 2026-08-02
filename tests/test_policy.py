@@ -151,6 +151,19 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(p.policy_state, "CORE_FULL")
         self.assertEqual(p.unit_actions["worker"], {"type": "WAIT"})
 
+    def test_authoritative_spare_capacity_clears_core_full_pause(self):
+        mem = ExplorationMemory(core_full=True)
+        s = snapshot_from_state(4, {"status": "ACTIVE", "resources": 5, "population": 1,
+            "objects": [
+                {"kind": "CORE", "id": "respawned-core", "controlled": True, "position": [0, 0]},
+                {"kind": "UNIT", "id": "worker", "controlled": True,
+                 "position": [0, 0], "unit_type": "WORKER", "cargo": 1},
+            ], "events": [{"event_id": "respawn-1", "event_type": "CORE_RESPAWNED"}]})
+        p = economy_plan(s, mem)
+        self.assertFalse(mem.core_full)
+        self.assertEqual(p.policy_state, "DEPOSIT")
+        self.assertEqual(p.unit_actions["worker"], {"type": "DEPOSIT"})
+
     def test_deposit_success_clears_core_full_pause(self):
         mem = ExplorationMemory(core_full=True)
         success_event = {

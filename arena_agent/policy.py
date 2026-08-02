@@ -92,6 +92,10 @@ class ExplorationMemory:
 
     def observe(self, state: Snapshot) -> None:
         self.permanent_obstacles.update(state.obstacle_cells)
+        # A state snapshot is authoritative. A newly respawned/replaced Core
+        # may have spare capacity without producing a DEPOSIT_SUCCEEDED event.
+        if state.resources < state.resource_capacity:
+            self.core_full = False
         for pos in state.resource_cells:
             self.resources[pos] = ResourceObservation(state.tick, "visible")
         for pos, observation in self.resources.items():
