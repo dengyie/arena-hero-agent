@@ -14,7 +14,7 @@ from urllib.request import Request, ProxyHandler, build_opener
 
 from .journal import Journal
 from .model import snapshot_from_state
-from .policy import economy_plan
+from .policy import ExplorationMemory, economy_plan
 
 LOG = logging.getLogger("arena_agent")
 WS_URL = "wss://api.arenahero.io/api/v1/game/ws"
@@ -97,6 +97,7 @@ async def run(args: argparse.Namespace) -> int:
     if not args.dry_run and not token and not cookie:
         raise SystemExit("ARENA_HERO_TOKEN or ARENA_HERO_COOKIE is required for --live")
     journal = Journal(args.journal)
+    memory = ExplorationMemory()
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     if cookie:
         headers["Cookie"] = cookie
@@ -130,7 +131,7 @@ async def run(args: argparse.Namespace) -> int:
                         if "tick" not in locals():
                             raise ProtocolError("state arrived before tick")
                         snapshot = snapshot_from_state(tick, msg["data"])
-                        plan = economy_plan(snapshot)
+                        plan = economy_plan(snapshot, memory)
                         result = await post_plan(token, tick, plan.as_dict(), args.dry_run, cookie, csrf)
                         raw_state = msg["data"]
                         state_summary = {
@@ -168,6 +169,11 @@ async def run(args: argparse.Namespace) -> int:
                             },
                             "events": raw_state.get("events", []),
                         }
+                        state_summary["policy_state"] = plan.policy_state
+                        state_summary["active_target"] = plan.active_target
+                        state_summary["waypoint"] = plan.waypoint
+                        state_summary["resource_memory_count"] = len(memory.resources)
+                        state_summary["last_event_types"] = plan.last_event_types
                         journal.write("plan", session=session_id, tick=tick, state=state_summary, plan=plan.as_dict(), result=result)
                         ticks += 1
                         if args.max_ticks > 0 and ticks >= args.max_ticks:
