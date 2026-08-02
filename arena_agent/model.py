@@ -12,6 +12,7 @@ class Unit:
     position: Position
     unit_type: str
     cargo: int = 0
+    hp: int | None = None
 
 
 @dataclass(frozen=True)
@@ -76,7 +77,8 @@ def snapshot_from_state(tick: int, data: dict[str, Any]) -> Snapshot:
         elif kind == "UNIT":
             if controlled:
                 units.append(Unit(str(obj["id"]), position(obj["position"]),
-                                  str(obj["unit_type"]), int(obj.get("cargo", 0))))
+                                  str(obj["unit_type"]), int(obj.get("cargo", 0)),
+                                  int(obj["hp"]) if obj.get("hp") is not None else None))
             elif "id" in obj and "position" in obj:
                 enemies.append(VisibleEnemy(str(obj["id"]), position(obj["position"]), "UNIT",
                                             str(obj.get("unit_type", "UNKNOWN"))))

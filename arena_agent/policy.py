@@ -20,6 +20,8 @@ PATH_MARGIN = 40
 SPAWN_MIN_RESOURCES = 12
 SPAWN_DEPOSITS_REQUIRED = 3
 SPAWN_WINDOW_TICKS = 20
+RISK_WINDOW_TICKS = 20
+WORKER_FRONTIER_RADII = (21, 33, 51, 75)
 MAX_ECONOMY_WORKERS = 8
 CAPACITY_RECOVERY_COOLDOWN = 4
 
@@ -87,6 +89,9 @@ class EventLedger:
     order: deque[str] = field(default_factory=deque)
     deposits: deque[int] = field(default_factory=deque)
     core_damage_ticks: deque[int] = field(default_factory=deque)
+    worker_damage_ticks: dict[str, int] = field(default_factory=dict)
+    pending_harvests: dict[str, int] = field(default_factory=dict)
+    deposit_latencies: deque[int] = field(default_factory=deque)
 
     def accept(self, event: dict[str, Any]) -> bool:
         event_id = str(event.get("event_id", ""))
@@ -106,11 +111,35 @@ class EventLedger:
     def record_damage(self, tick: int) -> None:
         self.core_damage_ticks.append(tick)
 
+    def record_worker_damage(self, worker_id: str, tick: int) -> None:
+        self.worker_damage_ticks[worker_id] = tick
+
+    def record_harvest(self, worker_id: str, tick: int) -> None:
+        self.pending_harvests[worker_id] = tick
+
+    def record_deposit_latency(self, worker_id: str, tick: int) -> int | None:
+        harvested_tick = self.pending_harvests.pop(worker_id, None)
+        if harvested_tick is None:
+            return None
+        latency = max(0, tick - harvested_tick)
+        self.deposit_latencies.append(latency)
+        while len(self.deposit_latencies) > MAX_EVENT_IDS:
+            self.deposit_latencies.popleft()
+        return latency
+
     def trim(self, tick: int) -> None:
         while self.deposits and self.deposits[0] < tick - SPAWN_WINDOW_TICKS:
             self.deposits.popleft()
-        while self.core_damage_ticks and self.core_damage_ticks[0] < tick - SPAWN_WINDOW_TICKS:
+        while self.core_damage_ticks and self.core_damage_ticks[0] < tick - RISK_WINDOW_TICKS:
             self.core_damage_ticks.popleft()
+        self.worker_damage_ticks = {
+            worker_id: damaged_tick for worker_id, damaged_tick in self.worker_damage_ticks.items()
+            if damaged_tick >= tick - RISK_WINDOW_TICKS
+        }
+        self.pending_harvests = {
+            worker_id: harvested_tick for worker_id, harvested_tick in self.pending_harvests.items()
+            if harvested_tick >= tick - RISK_WINDOW_TICKS
+        }
 
 
 @dataclass
@@ -175,6 +204,7 @@ class ExplorationMemory:
             actor_id = str(event.get("actor_id", ""))
             if kind == "HARVEST_SUCCEEDED" and pos is not None:
                 self.resources.setdefault(pos, ResourceObservation(0)).status = "depleted"
+                self.ledger.record_harvest(actor_id, state.tick)
             elif kind == "HARVEST_FAILED" and pos is not None:
                 obs = self.resources.setdefault(pos, ResourceObservation(0))
                 obs.status = "failed"
@@ -189,12 +219,15 @@ class ExplorationMemory:
             elif kind == "DEPOSIT_SUCCEEDED":
                 self.core_full = False
                 self.ledger.record_deposit(state.tick)
+                self.ledger.record_deposit_latency(actor_id, state.tick)
                 self.active_targets.pop(actor_id, None)
             elif kind == "UNIT_MOVE_FAILED":
                 target = self.active_targets.pop(actor_id, None)
                 if target is not None:
                     failures, _ = self.failed_targets.get(target, (0, 0))
                     self.failed_targets[target] = (failures + 1, state.tick + min(12, 2 + failures * 2))
+            elif kind == "UNIT_DAMAGED" and event.get("reason_code") == "ATTACK":
+                self.ledger.record_worker_damage(str(event.get("target_id", "")), state.tick)
             elif kind == "CORE_DAMAGED":
                 self.ledger.record_damage(state.tick)
             elif kind == "CORE_DESTROYED":
@@ -232,12 +265,21 @@ class ExplorationMemory:
         while len(self.frontier_candidates) > MAX_FRONTIER_CANDIDATES:
             self.frontier_candidates.pop()
 
+    def worker_frontier_radius(self, worker_index: int) -> int:
+        return WORKER_FRONTIER_RADII[min(worker_index, len(WORKER_FRONTIER_RADII) - 1)]
+
     def next_frontier(self, state: Snapshot, worker: Unit, obstacles: frozenset[Position],
-                      occupied: set[Position], reserved: set[Position] | None = None) -> tuple[Position | None, PathResult]:
+                      occupied: set[Position], reserved: set[Position] | None = None,
+                      max_radius: int | None = None) -> tuple[Position | None, PathResult]:
         reserved = reserved or set()
         self._refill_frontier(state)
+        def within_budget(target: Position) -> bool:
+            return (max_radius is None or state.core_position is None
+                    or max(abs(target[0] - state.core_position[0]),
+                           abs(target[1] - state.core_position[1])) <= max_radius)
+
         active = self.active_targets.get(worker.id)
-        if active is not None and active not in reserved and active not in self.failed_targets:
+        if active is not None and within_budget(active) and active not in reserved and active not in self.failed_targets:
             result = plan_path(worker.position, {active}, obstacles, occupied)
             if result.status == "FOUND":
                 return active, result
@@ -247,7 +289,8 @@ class ExplorationMemory:
         best: tuple[tuple[int, int, int, int, int], Position, PathResult] | None = None
         for target in candidates:
             failures, retry_after = self.failed_targets.get(target, (0, 0))
-            if target in reserved or retry_after > state.tick or target in obstacles or target in occupied:
+            if (not within_budget(target) or target in reserved or retry_after > state.tick
+                    or target in obstacles or target in occupied):
                 self.frontier_candidates.append(target)
                 continue
             result = plan_path(worker.position, {target}, obstacles, occupied)
@@ -273,7 +316,8 @@ class ExplorationMemory:
             self.frontier_candidates.clear()
             for target in retry_candidates:
                 failures, retry_after = self.failed_targets.get(target, (0, 0))
-                if target in reserved or retry_after > state.tick or target in obstacles or target in occupied:
+                if (not within_budget(target) or target in reserved or retry_after > state.tick
+                    or target in obstacles or target in occupied):
                     self.frontier_candidates.append(target)
                     continue
                 result = plan_path(worker.position, {target}, obstacles, occupied)
@@ -288,6 +332,19 @@ class ExplorationMemory:
                     best = (score, target, result)
                 else:
                     self.frontier_candidates.append(target)
+            if best is None and max_radius is not None and state.core_position is not None:
+                # A near-role Worker must not starve when the global frontier
+                # has expanded beyond its assignment band. Re-scan its bounded
+                # ring deterministically, without widening the role budget.
+                for target in self._build_band(state.core_position, max_radius):
+                    if target in reserved or target in obstacles or target in occupied:
+                        continue
+                    result = plan_path(worker.position, {target}, obstacles, occupied)
+                    if result.status != "FOUND":
+                        continue
+                    score = (target in self.completed_targets, result.path_length, target[0], target[1])
+                    if best is None or score < best[0]:
+                        best = (score, target, result)
             if best is None:
                 self._trim()
                 return None, PathResult(None, "NO_PATH", 0, 0, None)
@@ -452,7 +509,20 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
         primary_state = "RETURN_CORE" if path.status == "FOUND" else "RETURN_BLOCKED"
         primary_target, primary_path = state.core_position, path
 
-    empty_workers = [worker for worker in workers if worker.cargo <= 0]
+    injured_empty_workers = [worker for worker in workers if worker.cargo <= 0 and worker.hp is not None and worker.hp <= 1]
+    for worker in injured_empty_workers:
+        occupied = {pos for other_id, pos in worker_positions.items() if other_id != worker.id}
+        if state.core_position and worker.position == state.core_position:
+            actions[worker.id] = {"type": "HEAL"}
+            primary_state = "HEAL_WORKER"
+            primary_target = state.core_position
+            continue
+        path = plan_path(worker.position, {state.core_position} if state.core_position else set(), obstacles, occupied)
+        actions[worker.id] = {"type": "MOVE", "direction": path.direction} if path.direction else {"type": "WAIT"}
+        primary_state = "RETURN_HEAL" if path.status == "FOUND" else "RETURN_HEAL_BLOCKED"
+        primary_target, primary_path = state.core_position, path
+
+    empty_workers = [worker for worker in workers if worker.cargo <= 0 and worker not in injured_empty_workers]
     candidates: list[tuple[int, str, Position, Unit, PathResult]] = []
     for worker in empty_workers:
         occupied = {pos for other_id, pos in worker_positions.items() if other_id != worker.id}
@@ -475,12 +545,15 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
             primary_state = "TO_RESOURCE"
         primary_target, primary_path = resource, path
 
-    for worker in empty_workers:
+    for worker_index, worker in enumerate(empty_workers):
         if worker.id in assigned_workers:
             continue
         memory.complete_frontier_if_reached(worker, state.tick)
         occupied = {pos for other_id, pos in worker_positions.items() if other_id != worker.id}
-        target, path = memory.next_frontier(state, worker, obstacles, occupied, frontier_reserved)
+        target, path = memory.next_frontier(
+            state, worker, obstacles, occupied, frontier_reserved,
+            max_radius=memory.worker_frontier_radius(worker_index),
+        )
         if target is not None and path.direction:
             actions[worker.id] = {"type": "MOVE", "direction": path.direction}
             frontier_reserved.add(target)

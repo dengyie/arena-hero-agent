@@ -23,6 +23,71 @@ class AgentTests(unittest.TestCase):
         }
         data.update(kw)
         return snapshot_from_state(1, data)
+    def test_snapshot_parses_current_unit_hp(self):
+        s = snapshot_from_state(1, {"status": "ACTIVE", "resources": 5, "population": 1,
+            "objects": [
+                {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]},
+                {"kind": "UNIT", "id": "worker", "controlled": True,
+                 "position": [1, 0], "unit_type": "WORKER", "cargo": 0, "hp": 1},
+            ], "events": []})
+        self.assertEqual(s.workers[0].hp, 1)
+
+    def test_injured_empty_worker_returns_to_core_and_heals(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        away = snapshot_from_state(1, {"status": "ACTIVE", "resources": 5, "population": 1,
+            "objects": [core, {"kind": "UNIT", "id": "worker", "controlled": True,
+                "position": [2, 0], "unit_type": "WORKER", "cargo": 0, "hp": 1},
+                {"kind": "RESOURCE", "positions": [[2, 1]]}], "events": []})
+        p = economy_plan(away, ExplorationMemory())
+        self.assertEqual(p.policy_state, "RETURN_HEAL")
+        self.assertEqual(p.unit_actions["worker"], {"type": "MOVE", "direction": "LEFT"})
+        at_core = snapshot_from_state(2, {"status": "ACTIVE", "resources": 5, "population": 1,
+            "objects": [core, {"kind": "UNIT", "id": "worker", "controlled": True,
+                "position": [0, 0], "unit_type": "WORKER", "cargo": 0, "hp": 1}], "events": []})
+        p = economy_plan(at_core, ExplorationMemory())
+        self.assertEqual(p.policy_state, "HEAL_WORKER")
+        self.assertEqual(p.unit_actions["worker"], {"type": "HEAL"})
+
+    def test_injured_carrying_worker_still_returns_to_deposit(self):
+        s = snapshot_from_state(1, {"status": "ACTIVE", "resources": 5, "population": 1,
+            "objects": [
+                {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]},
+                {"kind": "UNIT", "id": "worker", "controlled": True,
+                 "position": [2, 0], "unit_type": "WORKER", "cargo": 1, "hp": 1},
+            ], "events": []})
+        p = economy_plan(s, ExplorationMemory())
+        self.assertEqual(p.policy_state, "RETURN_CORE")
+        self.assertEqual(p.unit_actions["worker"], {"type": "MOVE", "direction": "LEFT"})
+
+    def test_worker_frontier_radius_is_bounded_and_rescans_own_ring(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        worker = {"kind": "UNIT", "id": "worker", "controlled": True,
+                  "position": [0, 0], "unit_type": "WORKER", "cargo": 0}
+        s = snapshot_from_state(1, {"status": "ACTIVE", "resources": 5, "population": 1,
+                                     "objects": [core, worker], "events": []})
+        mem = ExplorationMemory(route_core=(0, 0), route_core_id="core", band_radius=75)
+        mem.frontier_candidates.extend([(75, 0)])
+        target, path = mem.next_frontier(s, s.workers[0], frozenset(), set(), max_radius=21)
+        self.assertIsNotNone(target)
+        self.assertLessEqual(max(abs(target[0]), abs(target[1])), 21)
+        self.assertEqual(path.status, "FOUND")
+
+    def test_event_ledger_records_harvest_to_deposit_latency(self):
+        mem = ExplorationMemory()
+        harvest = {"event_id": "h", "event_type": "HARVEST_SUCCEEDED", "actor_id": "worker",
+                   "position": [1, 0], "values": {"amount": 1}}
+        deposit = {"event_id": "d", "event_type": "DEPOSIT_SUCCEEDED", "actor_id": "worker",
+                   "position": [0, 0], "values": {"amount": 1}}
+        for tick, event, cargo, pos in [(10, harvest, 1, [1, 0]), (17, deposit, 0, [0, 0])]:
+            s = snapshot_from_state(tick, {"status": "ACTIVE", "resources": 6, "population": 1,
+                "objects": [
+                    {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]},
+                    {"kind": "UNIT", "id": "worker", "controlled": True,
+                     "position": pos, "unit_type": "WORKER", "cargo": cargo},
+                ], "events": [event]})
+            economy_plan(s, mem)
+        self.assertEqual(list(mem.ledger.deposit_latencies), [7])
+
     def test_snapshot_replaces_visible_objects(self):
         s = self.state()
         self.assertEqual(s.core_position, (0,0))

@@ -323,7 +323,34 @@ runtime:
 - 运行 journal 只写摘要，不写完整 `state.objects`、凭据或无限历史；私有 Obsidian 的“私有运行材料（敏感）”段是经用户授权的独立存储，不属于运行 journal，也不得同步到 Git。
 - 指标模块观察期先不影响动作；至少一个可比较的 50 Tick 窗口后才允许调整策略常量。
 
-## 7. 后续策略调整门
+### 7.1 日志驱动优化批次（本轮开发）
+
+最近 100 Tick 的真实日志表明：389/390 Worker 移动成功，但采集到交付时延为 15、27、30 Tick；路径搜索 `nodes` 平均 426.5、最大 2105，而运行 journal 没有记录已计算的 `path_length`。另有一名 Worker 收到 `UNIT_DAMAGED / ATTACK` 并处于 `hp=1/2`，现行模型未解析 HP，策略不会恢复。
+
+本轮只改以下三点：
+
+```text
+A. 紧凑可观测性
+   - 每 plan 写 path_length、Unit hp、Worker action/assignment 摘要
+   - 事件账本记录 harvest tick、deposit tick、worker damage tick
+   - 在 journal 写从 HARVEST_SUCCEEDED 到 DEPOSIT_SUCCEEDED 的可验证时延
+
+B. 确定性近/中/远分工
+   - Worker UUID 排序后分配 max frontier 方环半径（Chebyshev）：21 / 33 / 51 / 75
+   - cargo、当前可见资源和 Core 满仓事务仍优先于角色半径
+   - frontier target 只能在该 Worker 的半径预算内；目标冲突仍由唯一 reservation 解决
+   - 不引入随机探索、浏览器坐标或历史资源追逐
+
+C. 受伤 Worker 风险恢复
+   - 从当前 state 解析 Unit hp；Worker 初始/满 HP 为 2
+   - hp=1 且 carrying：继续 RETURN_CORE -> DEPOSIT
+   - hp=1 且空载：RETURN_CORE；同格 Core 后 HEAL
+   - UNIT_DAMAGED / ATTACK 进入有界风险窗口，冻结普通扩张；不改变满仓容量恢复的既有事务
+```
+
+验收：synthetic sequence 覆盖 hp=1 返航/HEAL、角色半径、资源与 cargo 抢占；线上只以 `UNIT_HEAL_SUCCEEDED`、`DEPOSIT_SUCCEEDED`、`path_length` 日志和 50 Tick 指标判断，不将 HEAL plan 或 HTTP 202 当成功。
+
+## 8. 后续策略调整门
 
 R2 指标稳定后，以明确触发条件进行小批次策略优化：
 

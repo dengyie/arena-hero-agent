@@ -147,6 +147,7 @@ async def run(args: argparse.Namespace) -> int:
                                         "unit_type": obj.get("unit_type"),
                                         "position": obj.get("position"),
                                         "cargo": obj.get("cargo", 0),
+                                        "hp": obj.get("hp"),
                                     }
                                     for obj in raw_state.get("objects", [])
                                     if obj.get("kind") == "UNIT" and obj.get("controlled")
@@ -182,6 +183,18 @@ async def run(args: argparse.Namespace) -> int:
                         state_summary["path"] = {
                             "status": plan.path_status,
                             "nodes": plan.path_nodes,
+                            "length": plan.path_length,
+                        }
+                        state_summary["worker_actions"] = {
+                            worker_id: action.get("type")
+                            for worker_id, action in plan.unit_actions.items()
+                        }
+                        state_summary["economy_metrics"] = {
+                            "recent_deposits": len(memory.ledger.deposits),
+                            "pending_harvests": len(memory.ledger.pending_harvests),
+                            "deposit_latencies": list(memory.ledger.deposit_latencies)[-8:],
+                            "injured_workers": sorted(memory.ledger.worker_damage_ticks),
+                            "core_damage_recent": len(memory.ledger.core_damage_ticks),
                         }
                         state_summary["last_event_types"] = plan.last_event_types
                         journal.write("plan", session=session_id, tick=tick, state=state_summary, plan=plan.as_dict(), result=result)
