@@ -353,6 +353,43 @@ class AgentTests(unittest.TestCase):
             ], "events": [full_event]})
         self.assertIsNone(economy_plan(capped, ExplorationMemory()).core_action)
 
+    def test_two_carriers_evict_before_core_full_recovery_spawn(self):
+        mem = ExplorationMemory()
+        full_event = {"event_id": "double-full", "event_type": "DEPOSIT_FAILED",
+                      "reason_code": "CORE_RESOURCE_FULL", "position": [0, 0]}
+        s = snapshot_from_state(20, {"status": "ACTIVE", "resources": 10, "population": 2,
+            "objects": [
+                {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]},
+                {"kind": "UNIT", "id": "carrier-a", "controlled": True,
+                 "position": [0, 0], "unit_type": "WORKER", "cargo": 1},
+                {"kind": "UNIT", "id": "carrier-b", "controlled": True,
+                 "position": [0, 0], "unit_type": "WORKER", "cargo": 1},
+            ], "events": [full_event]})
+        p = economy_plan(s, mem)
+        self.assertEqual(p.policy_state, "CORE_FULL_EVICT")
+        self.assertEqual(p.unit_actions["carrier-a"], {"type": "WAIT"})
+        self.assertEqual(p.unit_actions["carrier-b"], {"type": "MOVE", "direction": "UP"})
+        self.assertIsNone(p.core_action)
+
+    def test_core_spawn_failure_applies_recovery_cooldown(self):
+        mem = ExplorationMemory()
+        events = [
+            {"event_id": "full-cooldown", "event_type": "DEPOSIT_FAILED",
+             "reason_code": "CORE_RESOURCE_FULL", "position": [0, 0]},
+            {"event_id": "spawn-cooldown", "event_type": "CORE_SPAWN_FAILED",
+             "reason_code": "CELL_UNIT_LIMIT", "position": [0, 0]},
+        ]
+        s = snapshot_from_state(20, {"status": "ACTIVE", "resources": 10, "population": 1,
+            "objects": [
+                {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]},
+                {"kind": "UNIT", "id": "carrier", "controlled": True,
+                 "position": [0, 0], "unit_type": "WORKER", "cargo": 1},
+            ], "events": events})
+        p = economy_plan(s, mem)
+        self.assertGreater(mem.recovery_cooldown_until, 20)
+        self.assertEqual(p.policy_state, "CORE_FULL")
+        self.assertIsNone(p.core_action)
+
     def test_core_full_recovery_is_disabled_after_core_damage(self):
         mem = ExplorationMemory()
         events = [

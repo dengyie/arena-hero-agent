@@ -127,6 +127,7 @@ class ExplorationMemory:
     policy_state: str = "BOOT"
     last_event_types: tuple[str, ...] = ()
     core_full: bool = False
+    recovery_cooldown_until: int = 0
     ledger: EventLedger = field(default_factory=EventLedger)
     last_path: PathResult | None = None
 
@@ -140,6 +141,7 @@ class ExplorationMemory:
         self.active_targets.clear()
         self.active_target = None
         self.core_full = False
+        self.recovery_cooldown_until = 0
 
     def observe(self, state: Snapshot) -> None:
         core_changed = (
@@ -179,6 +181,10 @@ class ExplorationMemory:
                 self.active_targets.pop(actor_id, None)
             elif kind == "DEPOSIT_FAILED":
                 self.core_full = event.get("reason_code") == "CORE_RESOURCE_FULL"
+            elif kind == "CORE_SPAWN_FAILED":
+                # A Core-full recovery must not retry blindly while another
+                # carrier/movement dependency still occupies the Core cell.
+                self.recovery_cooldown_until = max(self.recovery_cooldown_until, state.tick + 4)
             elif kind == "DEPOSIT_SUCCEEDED":
                 self.core_full = False
                 self.ledger.record_deposit(state.tick)
@@ -369,6 +375,14 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
     primary_target: Position | None = None
     primary_path: PathResult | None = None
 
+    # Core-full recovery is a Core-level transaction. At most one carrying
+    # Worker can be the recovery leader; a second carrier must first vacate the
+    # Core cell so the next Tick can legally create capacity.
+    core_carriers = [worker for worker in workers
+                     if worker.cargo > 0 and worker.position == state.core_position]
+    recovery_leader = core_carriers[0] if len(core_carriers) == 1 else None
+    core_evictor = core_carriers[-1] if len(core_carriers) > 1 else None
+
     # Cargo has absolute priority. It is resolved before all new resource work.
     for worker in workers:
         occupied = {pos for other_id, pos in worker_positions.items() if other_id != worker.id}
@@ -382,7 +396,13 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
                      and (worker.position[0] + delta[0], worker.position[1] + delta[1]) not in occupied),
                     None,
                 )
-                if (recovery_direction and state.resources >= 5
+                if worker is core_evictor and recovery_direction:
+                    actions[worker.id] = {"type": "MOVE", "direction": recovery_direction}
+                    primary_state = "CORE_FULL_EVICT"
+                    primary_target = state.core_position
+                elif (worker is recovery_leader and recovery_direction
+                        and state.tick >= memory.recovery_cooldown_until
+                        and state.resources >= 5
                         and len(workers) < MAX_ECONOMY_WORKERS
                         and all(other.position != state.core_position
                                 for other in workers if other.id != worker.id)
