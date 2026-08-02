@@ -119,6 +119,23 @@ class AgentTests(unittest.TestCase):
         self.assertNotEqual(p.policy_state, "EXPLORATION_EXHAUSTED")
         self.assertIn(p.policy_state, {"EXPLORE", "NO_FRONTIER"})
 
+    def test_frontier_rebuilds_after_stale_candidate_batch(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        worker = {"kind": "UNIT", "id": "worker", "controlled": True,
+                  "position": [0, 0], "unit_type": "WORKER", "cargo": 0}
+        mem = ExplorationMemory()
+        s = snapshot_from_state(10, {"status": "ACTIVE", "resources": 8, "population": 1,
+                                      "objects": [core, worker], "events": []})
+        mem.route_core = (0, 0)
+        mem.band_radius = 15
+        mem.frontier_candidates.extend([(9, 0), (0, 9)])
+        mem.failed_targets[(9, 0)] = (1, 99)
+        mem.failed_targets[(0, 9)] = (1, 99)
+        p = economy_plan(s, mem)
+        self.assertEqual(p.policy_state, "EXPLORE")
+        self.assertEqual(p.unit_actions["worker"]["type"], "MOVE")
+        self.assertGreater(mem.band_radius, 15)
+
     def test_visible_resource_preempts_frontier(self):
         mem = ExplorationMemory()
         s = snapshot_from_state(3, {"status": "ACTIVE", "resources": 5, "population": 1,

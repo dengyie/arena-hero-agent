@@ -141,7 +141,12 @@ class ExplorationMemory:
         self.core_full = False
 
     def observe(self, state: Snapshot) -> None:
-        if state.core_position is not None and (self.route_core != state.core_position or self.route_core_id != state.core_id):
+        core_changed = (
+            self.route_core is not None
+            and (self.route_core != state.core_position
+                 or (self.route_core_id is not None and self.route_core_id != state.core_id))
+        )
+        if state.core_position is not None and (self.route_core is None or core_changed):
             self._reset_for_core(state)
         self.permanent_obstacles.update(state.obstacle_cells)
         if state.resources < state.resource_capacity:
@@ -206,9 +211,11 @@ class ExplorationMemory:
             points.append((core[0] - radius, y))
         return list(dict.fromkeys(points))
 
-    def _refill_frontier(self, state: Snapshot) -> None:
-        if state.core_position is None or self.frontier_candidates:
+    def _refill_frontier(self, state: Snapshot, *, force: bool = False) -> None:
+        if state.core_position is None or (self.frontier_candidates and not force):
             return
+        if force:
+            self.frontier_candidates.clear()
         if self.band_radius <= MAX_BAND_RADIUS:
             self.frontier_candidates.extend(self._build_band(state.core_position, self.band_radius))
             self.band_radius += BAND_INCREMENT
@@ -250,8 +257,32 @@ class ExplorationMemory:
             else:
                 self.frontier_candidates.append(target)
         if best is None:
-            self._trim()
-            return None, PathResult(None, "NO_PATH", 0, 0, None)
+            # A candidate batch can become permanently stale after accumulated
+            # terrain observations or retry backoff. Drop it and advance one
+            # deterministic band before declaring a genuine no-frontier state.
+            self._refill_frontier(state, force=True)
+            retry_candidates = list(self.frontier_candidates)
+            self.frontier_candidates.clear()
+            for target in retry_candidates:
+                failures, retry_after = self.failed_targets.get(target, (0, 0))
+                if target in reserved or retry_after > state.tick or target in obstacles or target in occupied:
+                    self.frontier_candidates.append(target)
+                    continue
+                result = plan_path(worker.position, {target}, obstacles, occupied)
+                if result.status != "FOUND":
+                    self.failed_targets[target] = (failures + 1, state.tick + min(12, 2 + failures * 2))
+                    self.frontier_candidates.append(target)
+                    continue
+                completed_tick = self.completed_targets.get(target, -1)
+                score = (0 if completed_tick < 0 else 1, result.path_length,
+                         -self.band_radius, target[0], target[1])
+                if best is None or score < best[0]:
+                    best = (score, target, result)
+                else:
+                    self.frontier_candidates.append(target)
+            if best is None:
+                self._trim()
+                return None, PathResult(None, "NO_PATH", 0, 0, None)
         _, target, result = best
         self.active_targets[worker.id] = target
         self.active_target = target
