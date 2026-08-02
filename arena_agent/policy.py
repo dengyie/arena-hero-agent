@@ -7,15 +7,19 @@ from typing import Any
 from .model import Position, Snapshot, Unit
 
 RESOURCE_TTL_TICKS = 8
-FRONTIER_STEP = 6  # approximately two Worker vision diameters
+FRONTIER_STEP = 6
 INITIAL_BAND_RADIUS = 9
 BAND_INCREMENT = 6
 MAX_BAND_RADIUS = 75
 MAX_FRONTIER_CANDIDATES = 512
 MAX_COMPLETED_TARGETS = 1024
 MAX_FAILED_TARGETS = 1024
+MAX_EVENT_IDS = 4096
 PATH_NODE_CAP = 30_000
 PATH_MARGIN = 40
+SPAWN_MIN_RESOURCES = 12
+SPAWN_DEPOSITS_REQUIRED = 3
+SPAWN_WINDOW_TICKS = 20
 
 DIRECTIONS: dict[str, Position] = {
     "UP": (0, -1), "DOWN": (0, 1), "LEFT": (-1, 0), "RIGHT": (1, 0)
@@ -32,29 +36,30 @@ class ResourceObservation:
 @dataclass(frozen=True)
 class PathResult:
     direction: str | None
-    status: str  # FOUND, START_AT_GOAL, NO_PATH, NODE_CAP
+    status: str
+    path_length: int
     explored_nodes: int
     target: Position | None
 
 
 def plan_path(start: Position, goals: set[Position], obstacles: frozenset[Position],
               occupied: set[Position]) -> PathResult:
-    """Bounded cardinal BFS from the actual current position to one target."""
+    """Deterministic bounded cardinal BFS from current position to a goal."""
     if not goals:
-        return PathResult(None, "NO_PATH", 0, None)
+        return PathResult(None, "NO_PATH", 0, 0, None)
     if start in goals:
-        return PathResult(None, "START_AT_GOAL", 0, start)
+        return PathResult(None, "START_AT_GOAL", 0, 0, start)
     points = set(goals) | set(obstacles) | set(occupied) | {start}
     min_x = min(x for x, _ in points) - PATH_MARGIN
     max_x = max(x for x, _ in points) + PATH_MARGIN
     min_y = min(y for _, y in points) - PATH_MARGIN
     max_y = max(y for _, y in points) + PATH_MARGIN
-    queue = deque([(start, None)])
+    queue = deque([(start, None, 0)])
     seen = {start}
     while queue:
         if len(seen) > PATH_NODE_CAP:
-            return PathResult(None, "NODE_CAP", len(seen), None)
-        current, first = queue.popleft()
+            return PathResult(None, "NODE_CAP", 0, len(seen), None)
+        current, first, distance = queue.popleft()
         for direction, delta in DIRECTIONS.items():
             nxt = current[0] + delta[0], current[1] + delta[1]
             if not (min_x <= nxt[0] <= max_x and min_y <= nxt[1] <= max_y):
@@ -63,16 +68,47 @@ def plan_path(start: Position, goals: set[Position], obstacles: frozenset[Positi
                 continue
             step = first or direction
             if nxt in goals:
-                return PathResult(step, "FOUND", len(seen), nxt)
+                return PathResult(step, "FOUND", distance + 1, len(seen), nxt)
             seen.add(nxt)
-            queue.append((nxt, step))
-    return PathResult(None, "NO_PATH", len(seen), None)
+            queue.append((nxt, step, distance + 1))
+    return PathResult(None, "NO_PATH", 0, len(seen), None)
 
 
 def first_step(start: Position, goals: set[Position], obstacles: frozenset[Position],
                occupied: set[Position]) -> str | None:
-    """Compatibility wrapper used by focused path tests."""
     return plan_path(start, goals, obstacles, occupied).direction
+
+
+@dataclass
+class EventLedger:
+    seen_ids: set[str] = field(default_factory=set)
+    order: deque[str] = field(default_factory=deque)
+    deposits: deque[int] = field(default_factory=deque)
+    core_damage_ticks: deque[int] = field(default_factory=deque)
+
+    def accept(self, event: dict[str, Any]) -> bool:
+        event_id = str(event.get("event_id", ""))
+        if not event_id:
+            return True
+        if event_id in self.seen_ids:
+            return False
+        self.seen_ids.add(event_id)
+        self.order.append(event_id)
+        while len(self.order) > MAX_EVENT_IDS:
+            self.seen_ids.discard(self.order.popleft())
+        return True
+
+    def record_deposit(self, tick: int) -> None:
+        self.deposits.append(tick)
+
+    def record_damage(self, tick: int) -> None:
+        self.core_damage_ticks.append(tick)
+
+    def trim(self, tick: int) -> None:
+        while self.deposits and self.deposits[0] < tick - SPAWN_WINDOW_TICKS:
+            self.deposits.popleft()
+        while self.core_damage_ticks and self.core_damage_ticks[0] < tick - SPAWN_WINDOW_TICKS:
+            self.core_damage_ticks.popleft()
 
 
 @dataclass
@@ -80,20 +116,34 @@ class ExplorationMemory:
     permanent_obstacles: set[Position] = field(default_factory=set)
     resources: dict[Position, ResourceObservation] = field(default_factory=dict)
     route_core: Position | None = None
+    route_core_id: str | None = None
     band_radius: int = INITIAL_BAND_RADIUS
     frontier_candidates: deque[Position] = field(default_factory=deque)
     completed_targets: dict[Position, int] = field(default_factory=dict)
     failed_targets: dict[Position, tuple[int, int]] = field(default_factory=dict)
-    active_target: Position | None = None
+    active_targets: dict[str, Position] = field(default_factory=dict)
+    active_target: Position | None = None  # compatibility/journal primary target
     policy_state: str = "BOOT"
     last_event_types: tuple[str, ...] = ()
     core_full: bool = False
+    ledger: EventLedger = field(default_factory=EventLedger)
     last_path: PathResult | None = None
 
+    def _reset_for_core(self, state: Snapshot) -> None:
+        self.route_core = state.core_position
+        self.route_core_id = state.core_id
+        self.band_radius = INITIAL_BAND_RADIUS
+        self.frontier_candidates.clear()
+        self.completed_targets.clear()
+        self.failed_targets.clear()
+        self.active_targets.clear()
+        self.active_target = None
+        self.core_full = False
+
     def observe(self, state: Snapshot) -> None:
+        if state.core_position is not None and (self.route_core != state.core_position or self.route_core_id != state.core_id):
+            self._reset_for_core(state)
         self.permanent_obstacles.update(state.obstacle_cells)
-        # A state snapshot is authoritative. A newly respawned/replaced Core
-        # may have spare capacity without producing a DEPOSIT_SUCCEEDED event.
         if state.resources < state.resource_capacity:
             self.core_full = False
         for pos in state.resource_cells:
@@ -101,31 +151,42 @@ class ExplorationMemory:
         for pos, observation in self.resources.items():
             if state.tick - observation.last_seen_tick >= RESOURCE_TTL_TICKS and pos not in state.resource_cells:
                 observation.status = "stale"
+        self.ledger.trim(state.tick)
 
-    def apply_events(self, events: tuple[dict[str, Any], ...]) -> None:
-        self.last_event_types = tuple(str(event.get("event_type")) for event in events)
-        for event in events:
+    def apply_events(self, state: Snapshot) -> None:
+        self.last_event_types = tuple(str(event.get("event_type")) for event in state.events)
+        for event in state.events:
+            if not self.ledger.accept(event):
+                continue
             kind = str(event.get("event_type"))
             raw_pos = event.get("position")
-            if not isinstance(raw_pos, list | tuple) or len(raw_pos) != 2:
-                continue
-            pos = int(raw_pos[0]), int(raw_pos[1])
-            if kind == "HARVEST_SUCCEEDED":
+            pos: Position | None = None
+            if isinstance(raw_pos, (list, tuple)) and len(raw_pos) == 2:
+                pos = int(raw_pos[0]), int(raw_pos[1])
+            actor_id = str(event.get("actor_id", ""))
+            if kind == "HARVEST_SUCCEEDED" and pos is not None:
                 self.resources.setdefault(pos, ResourceObservation(0)).status = "depleted"
-            elif kind == "HARVEST_FAILED":
+            elif kind == "HARVEST_FAILED" and pos is not None:
                 obs = self.resources.setdefault(pos, ResourceObservation(0))
                 obs.status = "failed"
                 obs.failure_count += 1
+                self.active_targets.pop(actor_id, None)
             elif kind == "DEPOSIT_FAILED":
                 self.core_full = event.get("reason_code") == "CORE_RESOURCE_FULL"
             elif kind == "DEPOSIT_SUCCEEDED":
                 self.core_full = False
-            elif kind == "UNIT_MOVE_FAILED" and self.active_target is not None:
-                failures, _ = self.failed_targets.get(self.active_target, (0, 0))
-                # Dynamic movement failure is not a permanent obstacle. Backoff
-                # this target briefly and force a fresh start→goal plan next tick.
-                self.failed_targets[self.active_target] = (failures + 1, 0)
-                self.active_target = None
+                self.ledger.record_deposit(state.tick)
+                self.active_targets.pop(actor_id, None)
+            elif kind == "UNIT_MOVE_FAILED":
+                target = self.active_targets.pop(actor_id, None)
+                if target is not None:
+                    failures, _ = self.failed_targets.get(target, (0, 0))
+                    self.failed_targets[target] = (failures + 1, state.tick + min(12, 2 + failures * 2))
+            elif kind == "CORE_DAMAGED":
+                self.ledger.record_damage(state.tick)
+            elif kind == "CORE_DESTROYED":
+                self.active_targets.clear()
+                self.core_full = False
 
     def _trim(self) -> None:
         while len(self.completed_targets) > MAX_COMPLETED_TARGETS:
@@ -134,7 +195,6 @@ class ExplorationMemory:
             self.failed_targets.pop(next(iter(self.failed_targets)))
 
     def _build_band(self, core: Position, radius: int) -> list[Position]:
-        """Stable serpentine ring with coverage centers every FRONTIER_STEP."""
         points: list[Position] = []
         for x in range(core[0] - radius, core[0] + radius + 1, FRONTIER_STEP):
             points.append((x, core[1] - radius))
@@ -146,80 +206,77 @@ class ExplorationMemory:
             points.append((core[0] - radius, y))
         return list(dict.fromkeys(points))
 
-    def _reset_for_core(self, core: Position) -> None:
-        self.route_core = core
-        self.band_radius = INITIAL_BAND_RADIUS
-        self.frontier_candidates.clear()
-        self.completed_targets.clear()
-        self.failed_targets.clear()
-        self.active_target = None
-
     def _refill_frontier(self, state: Snapshot) -> None:
-        core = state.core_position
-        if core is None:
-            return
-        if self.route_core != core:
-            self._reset_for_core(core)
-        if self.frontier_candidates:
+        if state.core_position is None or self.frontier_candidates:
             return
         if self.band_radius <= MAX_BAND_RADIUS:
-            self.frontier_candidates.extend(self._build_band(core, self.band_radius))
+            self.frontier_candidates.extend(self._build_band(state.core_position, self.band_radius))
             self.band_radius += BAND_INCREMENT
         else:
-            # Keep patrolling at the legal maximum radius. Oldest completed
-            # sectors become candidates again instead of terminal WAIT.
-            self.frontier_candidates.extend(self._build_band(core, MAX_BAND_RADIUS))
+            self.frontier_candidates.extend(self._build_band(state.core_position, MAX_BAND_RADIUS))
         while len(self.frontier_candidates) > MAX_FRONTIER_CANDIDATES:
             self.frontier_candidates.pop()
 
     def next_frontier(self, state: Snapshot, worker: Unit, obstacles: frozenset[Position],
-                      occupied: set[Position]) -> tuple[Position | None, PathResult]:
+                      occupied: set[Position], reserved: set[Position] | None = None) -> tuple[Position | None, PathResult]:
+        reserved = reserved or set()
         self._refill_frontier(state)
-        if self.active_target is not None and self.active_target not in self.failed_targets:
-            result = plan_path(worker.position, {self.active_target}, obstacles, occupied)
+        active = self.active_targets.get(worker.id)
+        if active is not None and active not in reserved and active not in self.failed_targets:
+            result = plan_path(worker.position, {active}, obstacles, occupied)
             if result.status == "FOUND":
-                return self.active_target, result
-            self.failed_targets[self.active_target] = (1, state.tick + 3)
-            self.active_target = None
+                return active, result
+            self.active_targets.pop(worker.id, None)
         candidates = list(self.frontier_candidates)
         self.frontier_candidates.clear()
-        best: tuple[tuple[int, int, int, int], Position, PathResult] | None = None
+        best: tuple[tuple[int, int, int, int, int], Position, PathResult] | None = None
         for target in candidates:
-            failure_count, retry_after = self.failed_targets.get(target, (0, 0))
-            if retry_after > state.tick or target in obstacles or target in occupied:
+            failures, retry_after = self.failed_targets.get(target, (0, 0))
+            if target in reserved or retry_after > state.tick or target in obstacles or target in occupied:
                 self.frontier_candidates.append(target)
                 continue
             result = plan_path(worker.position, {target}, obstacles, occupied)
             if result.status != "FOUND":
-                self.failed_targets[target] = (failure_count + 1, state.tick + min(12, 2 + failure_count * 2))
+                self.failed_targets[target] = (failures + 1, state.tick + min(12, 2 + failures * 2))
                 self.frontier_candidates.append(target)
                 continue
-            # Prefer never-completed candidates and short continuous routes.
             completed_tick = self.completed_targets.get(target, -1)
-            score = (0 if completed_tick < 0 else 1, result.explored_nodes, target[0], target[1])
+            age_penalty = 0 if completed_tick < 0 else 1
+            # Deterministic coverage score: unvisited before revisits, then
+            # true path length, then band progress and coordinate tie-break.
+            score = (age_penalty, result.path_length, -self.band_radius, target[0], target[1])
             if best is None or score < best[0]:
                 best = (score, target, result)
             else:
                 self.frontier_candidates.append(target)
         if best is None:
             self._trim()
-            return None, PathResult(None, "NO_PATH", 0, None)
+            return None, PathResult(None, "NO_PATH", 0, 0, None)
         _, target, result = best
+        self.active_targets[worker.id] = target
         self.active_target = target
         self._trim()
         return target, result
 
     def complete_frontier_if_reached(self, worker: Unit, tick: int) -> None:
-        if self.active_target == worker.position:
+        if self.active_targets.get(worker.id) == worker.position:
             self.completed_targets[worker.position] = tick
-            self.active_target = None
+            self.active_targets.pop(worker.id, None)
 
     def visible_targets(self, state: Snapshot) -> list[Position]:
-        return sorted(
-            (pos for pos in state.resource_cells
-             if self.resources.get(pos, ResourceObservation(state.tick)).status == "visible"),
-            key=lambda pos: (pos[0], pos[1]),
-        )
+        return sorted((pos for pos in state.resource_cells
+                       if self.resources.get(pos, ResourceObservation(state.tick)).status == "visible"),
+                      key=lambda pos: (pos[0], pos[1]))
+
+    def can_spawn_worker(self, state: Snapshot) -> bool:
+        if state.core_position is None or self.core_full:
+            return False
+        if len(state.workers) >= 2 or state.resources < SPAWN_MIN_RESOURCES:
+            return False
+        if len(self.ledger.deposits) < SPAWN_DEPOSITS_REQUIRED or self.ledger.core_damage_ticks:
+            return False
+        # Core occupies one slot. Do not spawn while a Unit shares its cell.
+        return all(unit.position != state.core_position for unit in state.units)
 
 
 @dataclass(frozen=True)
@@ -232,84 +289,112 @@ class Plan:
     last_event_types: tuple[str, ...] = ()
     path_status: str = "NONE"
     path_nodes: int = 0
+    path_length: int = 0
     band_radius: int = 0
+    assignments: int = 0
 
     def as_dict(self) -> dict[str, Any]:
-        plan: dict[str, Any] = {"unit_actions": self.unit_actions}
+        result: dict[str, Any] = {"unit_actions": self.unit_actions}
         if self.core_action is not None:
-            plan["core_action"] = self.core_action
-        return plan
+            result["core_action"] = self.core_action
+        return result
 
 
 def _plan(actions: dict[str, dict[str, Any]], memory: ExplorationMemory, *,
-          policy_state: str, target: Position | None = None,
-          waypoint: Position | None = None, path: PathResult | None = None) -> Plan:
+          policy_state: str, target: Position | None = None, waypoint: Position | None = None,
+          path: PathResult | None = None, core_action: dict[str, Any] | None = None) -> Plan:
     memory.policy_state = policy_state
     memory.last_path = path
-    return Plan(
-        actions, policy_state=policy_state, active_target=target, waypoint=waypoint,
-        last_event_types=memory.last_event_types,
-        path_status=path.status if path else "NONE",
-        path_nodes=path.explored_nodes if path else 0,
-        band_radius=memory.band_radius,
-    )
+    return Plan(actions, core_action=core_action, policy_state=policy_state, active_target=target,
+                waypoint=waypoint, last_event_types=memory.last_event_types,
+                path_status=path.status if path else "NONE",
+                path_nodes=path.explored_nodes if path else 0,
+                path_length=path.path_length if path else 0,
+                band_radius=memory.band_radius, assignments=len(memory.active_targets))
 
 
 def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Plan:
     memory = memory or ExplorationMemory()
     memory.observe(state)
-    memory.apply_events(state.events)
-    actions: dict[str, dict[str, Any]] = {}
+    memory.apply_events(state)
     if state.status != "ACTIVE":
-        return _plan(actions, memory, policy_state="PAUSE")
+        return _plan({}, memory, policy_state="PAUSE")
+
+    # Explicit safety default for non-Worker units. Manual actions still have
+    # official priority over Agent actions on the same tick.
+    actions = {unit.id: {"type": "WAIT"} for unit in state.units if unit.unit_type != "WORKER"}
     workers = sorted(state.workers, key=lambda unit: unit.id)
     if not workers:
-        return _plan(actions, memory, policy_state="WAIT_NO_WORKER")
+        core_action = {"type": "SPAWN", "unit_type": "WORKER"} if memory.can_spawn_worker(state) else None
+        return _plan(actions, memory, policy_state="SPAWN_BOOT" if core_action else "WAIT_NO_WORKER",
+                     core_action=core_action)
 
-    # Phase 1/2 retains the existing single Worker economy behavior. Phase 3
-    # will allocate all Workers. Other units are deliberately omitted here so
-    # the server applies its documented WAIT default.
-    worker = workers[0]
-    occupied = {unit.position for unit in state.units if unit.id != worker.id}
-    known_obstacles = frozenset(memory.permanent_obstacles | set(state.obstacle_cells))
+    obstacles = frozenset(memory.permanent_obstacles | set(state.obstacle_cells))
+    worker_positions = {worker.id: worker.position for worker in workers}
+    resource_reserved: set[Position] = set()
+    frontier_reserved: set[Position] = set()
+    primary_state = "EXPLORE"
+    primary_target: Position | None = None
+    primary_path: PathResult | None = None
 
-    if worker.cargo > 0:
+    # Cargo has absolute priority. It is resolved before all new resource work.
+    for worker in workers:
+        occupied = {pos for other_id, pos in worker_positions.items() if other_id != worker.id}
+        if worker.cargo <= 0:
+            continue
         if state.core_position and worker.position == state.core_position:
             if memory.core_full:
-                return _plan({worker.id: {"type": "WAIT"}}, memory,
-                             policy_state="CORE_FULL", target=state.core_position)
-            return _plan({worker.id: {"type": "DEPOSIT"}}, memory,
-                         policy_state="DEPOSIT", target=state.core_position)
-        path = plan_path(worker.position, {state.core_position} if state.core_position else set(),
-                         known_obstacles, occupied)
-        action = {"type": "MOVE", "direction": path.direction} if path.direction else {"type": "WAIT"}
-        state_name = "RETURN_CORE" if path.status == "FOUND" else "RETURN_BLOCKED"
-        return _plan({worker.id: action}, memory, policy_state=state_name,
-                     target=state.core_position, path=path)
+                actions[worker.id] = {"type": "WAIT"}
+                primary_state = "CORE_FULL"
+            else:
+                actions[worker.id] = {"type": "DEPOSIT"}
+                primary_state = "DEPOSIT"
+            continue
+        path = plan_path(worker.position, {state.core_position} if state.core_position else set(), obstacles, occupied)
+        actions[worker.id] = {"type": "MOVE", "direction": path.direction} if path.direction else {"type": "WAIT"}
+        primary_state = "RETURN_CORE" if path.status == "FOUND" else "RETURN_BLOCKED"
+        primary_target, primary_path = state.core_position, path
 
-    targets = memory.visible_targets(state)
-    if targets:
-        target_paths = [(target, plan_path(worker.position, {target}, known_obstacles, occupied)) for target in targets]
-        reachable = [(target, path) for target, path in target_paths if path.status in {"FOUND", "START_AT_GOAL"}]
-        if reachable:
-            target, path = min(reachable, key=lambda pair: (
-                abs(pair[0][0] - worker.position[0]) + abs(pair[0][1] - worker.position[1]), pair[0]))
-            memory.active_target = target
-            if path.status == "START_AT_GOAL":
-                return _plan({worker.id: {"type": "HARVEST"}}, memory,
-                             policy_state="HARVEST", target=target, path=path)
-            return _plan({worker.id: {"type": "MOVE", "direction": path.direction}}, memory,
-                         policy_state="TO_RESOURCE", target=target, path=path)
-        for target, path in target_paths:
-            failures, _ = memory.failed_targets.get(target, (0, 0))
-            memory.failed_targets[target] = (failures + 1, state.tick + 6)
+    empty_workers = [worker for worker in workers if worker.cargo <= 0]
+    candidates: list[tuple[int, str, Position, Unit, PathResult]] = []
+    for worker in empty_workers:
+        occupied = {pos for other_id, pos in worker_positions.items() if other_id != worker.id}
+        for resource in memory.visible_targets(state):
+            path = plan_path(worker.position, {resource}, obstacles, occupied)
+            if path.status in {"FOUND", "START_AT_GOAL"}:
+                candidates.append((path.path_length, worker.id, resource, worker, path))
+    assigned_workers: set[str] = set()
+    for _, _, resource, worker, path in sorted(candidates, key=lambda item: (item[0], item[1], item[2])):
+        if worker.id in assigned_workers or resource in resource_reserved:
+            continue
+        assigned_workers.add(worker.id)
+        resource_reserved.add(resource)
+        memory.active_targets[worker.id] = resource
+        if path.status == "START_AT_GOAL":
+            actions[worker.id] = {"type": "HARVEST"}
+            primary_state = "HARVEST"
+        else:
+            actions[worker.id] = {"type": "MOVE", "direction": path.direction}
+            primary_state = "TO_RESOURCE"
+        primary_target, primary_path = resource, path
 
-    memory.complete_frontier_if_reached(worker, state.tick)
-    target, path = memory.next_frontier(state, worker, known_obstacles, occupied)
-    if target is not None and path.direction:
-        return _plan({worker.id: {"type": "MOVE", "direction": path.direction}}, memory,
-                     policy_state="EXPLORE", waypoint=target, path=path)
-    # A bounded and explicit idle result is only possible when no legal
-    # frontier is currently reachable; next Tick refills/re-evaluates it.
-    return _plan({worker.id: {"type": "WAIT"}}, memory,
-                 policy_state="NO_FRONTIER", path=path)
+    for worker in empty_workers:
+        if worker.id in assigned_workers:
+            continue
+        memory.complete_frontier_if_reached(worker, state.tick)
+        occupied = {pos for other_id, pos in worker_positions.items() if other_id != worker.id}
+        target, path = memory.next_frontier(state, worker, obstacles, occupied, frontier_reserved)
+        if target is not None and path.direction:
+            actions[worker.id] = {"type": "MOVE", "direction": path.direction}
+            frontier_reserved.add(target)
+            if primary_target is None:
+                primary_state, primary_target, primary_path = "EXPLORE", target, path
+        else:
+            actions[worker.id] = {"type": "WAIT"}
+            if primary_target is None:
+                primary_state, primary_path = "NO_FRONTIER", path
+
+    core_action = {"type": "SPAWN", "unit_type": "WORKER"} if memory.can_spawn_worker(state) else None
+    return _plan(actions, memory, policy_state=primary_state, target=primary_target,
+                 waypoint=primary_target if primary_state == "EXPLORE" else None,
+                 path=primary_path, core_action=core_action)

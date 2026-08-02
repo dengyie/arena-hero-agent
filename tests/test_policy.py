@@ -180,6 +180,94 @@ class AgentTests(unittest.TestCase):
         self.assertFalse(mem.core_full)
         self.assertEqual(p.policy_state, "DEPOSIT")
 
+    def test_multi_worker_claims_distinct_resources(self):
+        s = snapshot_from_state(1, {"status": "ACTIVE", "resources": 8, "population": 2,
+            "objects": [
+                {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]},
+                {"kind": "UNIT", "id": "worker-a", "controlled": True,
+                 "position": [1, 0], "unit_type": "WORKER", "cargo": 0},
+                {"kind": "UNIT", "id": "worker-b", "controlled": True,
+                 "position": [5, 0], "unit_type": "WORKER", "cargo": 0},
+                {"kind": "RESOURCE", "positions": [[1, 1], [5, 1]]},
+            ], "events": []})
+        p = economy_plan(s, ExplorationMemory())
+        self.assertEqual(p.unit_actions["worker-a"], {"type": "MOVE", "direction": "DOWN"})
+        self.assertEqual(p.unit_actions["worker-b"], {"type": "MOVE", "direction": "DOWN"})
+
+    def test_multi_worker_does_not_compete_for_same_resource(self):
+        s = snapshot_from_state(1, {"status": "ACTIVE", "resources": 8, "population": 2,
+            "objects": [
+                {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]},
+                {"kind": "UNIT", "id": "worker-a", "controlled": True,
+                 "position": [1, 0], "unit_type": "WORKER", "cargo": 0},
+                {"kind": "UNIT", "id": "worker-b", "controlled": True,
+                 "position": [3, 0], "unit_type": "WORKER", "cargo": 0},
+                {"kind": "RESOURCE", "positions": [[1, 1]]},
+            ], "events": []})
+        p = economy_plan(s, ExplorationMemory())
+        resource_moves = [action for action in (p.unit_actions["worker-a"], p.unit_actions["worker-b"])
+                          if action == {"type": "MOVE", "direction": "DOWN"}]
+        self.assertEqual(len(resource_moves), 1)
+        self.assertIn(p.unit_actions["worker-b"]["type"], {"MOVE", "WAIT"})
+
+    def test_non_worker_explicitly_waits_while_worker_explores(self):
+        s = snapshot_from_state(1, {"status": "ACTIVE", "resources": 8, "population": 2,
+            "objects": [
+                {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]},
+                {"kind": "UNIT", "id": "worker", "controlled": True,
+                 "position": [0, 0], "unit_type": "WORKER", "cargo": 0},
+                {"kind": "UNIT", "id": "vanguard", "controlled": True,
+                 "position": [1, 0], "unit_type": "VANGUARD", "cargo": 0},
+            ], "events": []})
+        p = economy_plan(s, ExplorationMemory())
+        self.assertEqual(p.unit_actions["vanguard"], {"type": "WAIT"})
+        self.assertEqual(p.unit_actions["worker"]["type"], "MOVE")
+
+    def test_event_ledger_deduplicates_deposit_event(self):
+        event = {"event_id": "deposit-once", "event_type": "DEPOSIT_SUCCEEDED",
+                 "actor_id": "worker", "position": [0, 0], "values": {"amount": 1}}
+        mem = ExplorationMemory()
+        for tick in (1, 2):
+            s = snapshot_from_state(tick, {"status": "ACTIVE", "resources": 6, "population": 1,
+                "objects": [
+                    {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]},
+                    {"kind": "UNIT", "id": "worker", "controlled": True,
+                     "position": [0, 0], "unit_type": "WORKER", "cargo": 0},
+                ], "events": [event]})
+            economy_plan(s, mem)
+        self.assertEqual(list(mem.ledger.deposits), [1])
+
+    def test_spawn_worker_requires_economy_and_safety_gates(self):
+        mem = ExplorationMemory()
+        mem.ledger.deposits.extend([1, 2, 3])
+        s = snapshot_from_state(4, {"status": "ACTIVE", "resources": 12, "population": 1,
+            "objects": [{"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}],
+            "events": []})
+        p = economy_plan(s, mem)
+        self.assertEqual(p.core_action, {"type": "SPAWN", "unit_type": "WORKER"})
+        mem.ledger.core_damage_ticks.append(4)
+        self.assertIsNone(economy_plan(s, mem).core_action)
+
+    def test_spawn_worker_is_blocked_by_core_occupancy_or_second_worker(self):
+        mem = ExplorationMemory()
+        mem.ledger.deposits.extend([1, 2, 3])
+        occupied = snapshot_from_state(4, {"status": "ACTIVE", "resources": 12, "population": 1,
+            "objects": [
+                {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]},
+                {"kind": "UNIT", "id": "worker", "controlled": True,
+                 "position": [0, 0], "unit_type": "WORKER", "cargo": 0},
+            ], "events": []})
+        self.assertIsNone(economy_plan(occupied, mem).core_action)
+        two_workers = snapshot_from_state(5, {"status": "ACTIVE", "resources": 12, "population": 2,
+            "objects": [
+                {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]},
+                {"kind": "UNIT", "id": "worker-a", "controlled": True,
+                 "position": [1, 0], "unit_type": "WORKER", "cargo": 0},
+                {"kind": "UNIT", "id": "worker-b", "controlled": True,
+                 "position": [2, 0], "unit_type": "WORKER", "cargo": 0},
+            ], "events": []})
+        self.assertIsNone(economy_plan(two_workers, mem).core_action)
+
     def test_path_result_reports_no_path_and_node_cap(self):
         no_path = plan_path((0, 0), {(2, 0)}, frozenset({(1, 0), (1, 1), (1, -1)}), set())
         self.assertIn(no_path.status, {"FOUND", "NO_PATH", "NODE_CAP"})
