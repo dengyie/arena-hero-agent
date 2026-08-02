@@ -374,6 +374,7 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
     primary_state = "EXPLORE"
     primary_target: Position | None = None
     primary_path: PathResult | None = None
+    recovery_worker_id: str | None = None
 
     # Core-full recovery is a Core-level transaction. At most one carrying
     # Worker can be the recovery leader; a second carrier must first vacate the
@@ -387,6 +388,13 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
     for worker in workers:
         occupied = {pos for other_id, pos in worker_positions.items() if other_id != worker.id}
         if worker.cargo <= 0:
+            continue
+        if memory.core_full and state.core_position and worker.position != state.core_position:
+            # While capacity recovery is in flight the Core cell is reserved.
+            # Do not make additional carriers contest its two entity slots.
+            actions[worker.id] = {"type": "WAIT"}
+            if primary_state not in {"CORE_FULL_EVICT", "CORE_FULL_RECOVERY"}:
+                primary_state = "CORE_FULL_HOLD"
             continue
         if state.core_position and worker.position == state.core_position:
             if memory.core_full:
@@ -410,6 +418,7 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
                     actions[worker.id] = {"type": "MOVE", "direction": recovery_direction}
                     primary_state = "CORE_FULL_RECOVERY"
                     primary_target = state.core_position
+                    recovery_worker_id = worker.id
                 else:
                     actions[worker.id] = {"type": "WAIT"}
                     primary_state = "CORE_FULL"
@@ -462,7 +471,7 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
                 primary_state, primary_path = "NO_FRONTIER", path
 
     recovery_spawn = (
-        primary_state == "CORE_FULL_RECOVERY"
+        recovery_worker_id is not None
         and len(workers) < MAX_ECONOMY_WORKERS
         and state.resources >= 5
         and not memory.ledger.core_damage_ticks

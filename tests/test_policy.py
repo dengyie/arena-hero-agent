@@ -353,6 +353,24 @@ class AgentTests(unittest.TestCase):
             ], "events": [full_event]})
         self.assertIsNone(economy_plan(capped, ExplorationMemory()).core_action)
 
+    def test_core_full_holds_carrier_outside_reserved_core(self):
+        mem = ExplorationMemory()
+        full_event = {"event_id": "full-hold", "event_type": "DEPOSIT_FAILED",
+                      "reason_code": "CORE_RESOURCE_FULL", "position": [0, 0]}
+        s = snapshot_from_state(21, {"status": "ACTIVE", "resources": 10, "population": 2,
+            "objects": [
+                {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]},
+                {"kind": "UNIT", "id": "leader", "controlled": True,
+                 "position": [0, 0], "unit_type": "WORKER", "cargo": 1},
+                {"kind": "UNIT", "id": "outside", "controlled": True,
+                 "position": [0, 1], "unit_type": "WORKER", "cargo": 1},
+            ], "events": [full_event]})
+        p = economy_plan(s, mem)
+        self.assertEqual(p.policy_state, "CORE_FULL_RECOVERY")
+        self.assertEqual(p.unit_actions["leader"], {"type": "MOVE", "direction": "UP"})
+        self.assertEqual(p.unit_actions["outside"], {"type": "WAIT"})
+        self.assertEqual(p.core_action, {"type": "SPAWN", "unit_type": "WORKER"})
+
     def test_two_carriers_evict_before_core_full_recovery_spawn(self):
         mem = ExplorationMemory()
         full_event = {"event_id": "double-full", "event_type": "DEPOSIT_FAILED",
