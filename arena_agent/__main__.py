@@ -175,6 +175,18 @@ async def run(args: argparse.Namespace) -> int:
                             },
                             "events": raw_state.get("events", []),
                         }
+                        state_summary["upkeep_next_tick"] = raw_state.get("upkeep_next_tick")
+                        state_summary["controlled_core_state"] = [
+                            {
+                                "id": obj.get("id"),
+                                "position": obj.get("position"),
+                                "hp": obj.get("hp"),
+                                "shield": obj.get("shield"),
+                                "state": obj.get("state"),
+                            }
+                            for obj in raw_state.get("objects", [])
+                            if obj.get("kind") == "CORE" and obj.get("controlled")
+                        ]
                         state_summary["policy_state"] = plan.policy_state
                         state_summary["active_target"] = plan.active_target
                         state_summary["waypoint"] = plan.waypoint
