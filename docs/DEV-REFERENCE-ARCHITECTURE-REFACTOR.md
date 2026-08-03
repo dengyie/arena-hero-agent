@@ -1,6 +1,6 @@
 # Arena Hero 参考成熟 Agent 的架构重构设计
 
-状态：已定稿，待开发确认
+状态：已上线并完成代码 review；资源全局匹配已通过 50 Tick 线上验收。
 日期：2026-08-03
 参考实现：`https://github.com/VelvetEvening/Arena-Crazy-Attack`，审查提交 `88083db7fb9ba6b21b5918498921bcfeb4bd7719`。
 当前规则主契约：`docs/DEV-OFFICIAL-STRATEGY-CONTRACT.md`。
@@ -249,6 +249,32 @@ no Core transaction or ingress regression
 ```
 
 Rollback: only files of the active phase; restart only `arena-hero-agent`. Never stop global Supervisor/Chrome/unrelated services.
+
+## 9.1 上线与代码 review 结果
+
+上线链路：`92a9c14`（模块抽取与 allocator）→ `373ca5e`（显式 128-edge 上界）→ `880e8a7`（review 修复）。
+
+```text
+local: 55 tests + compileall + deploy shell PASS
+allocator: 1-4 Worker / 1-4 resource 随机矩阵与穷举最小成本一致
+CI: PASS
+pxed staged: 54 / 55 tests + compileall PASS
+```
+
+review 发现并修复一项 P1 observability 缺陷：Core full/PAUSE 等跳过 allocator 的分支会保留上一 Tick 的 allocator summary；`880e8a7` 现已在每次 plan 开始重置 `allocation_count/total_cost`，并以跨 Tick regression 锁定。
+
+线上新 session 的完整 50 Tick：
+
+```text
+50/50 HTTP 202
+299 UNIT_MOVE_SUCCEEDED
+2 DEPOSIT_SUCCEEDED
+1 HARVEST_SUCCEEDED
+1 MOVE_DESTINATION_OCCUPIED
+1 DEPOSIT_FAILED / CORE_RESOURCE_FULL
+```
+
+资源 `38 → 40`、population=8/capacity=40，13 个 `CORE_FULL` 是当前 cap=8 的有原因安全状态。失败移动为同一 carrier 在不同位置/方向的 5 次短期动态占位；后续 event 显示替代路径连续成功，未形成同 edge 重试风暴。allocator 在资源可见时真实产生 1–3 个匹配和 `HARVEST_SUCCEEDED`，无资源时 `matched=0/cost=0`。
 
 ## 10. Explicit Non-goals and Review Gates
 
