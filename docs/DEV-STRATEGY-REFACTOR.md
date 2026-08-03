@@ -352,7 +352,7 @@ C. 受伤 Worker 风险恢复
 
 ### 7.2 多 Worker 交通控制（已上线，冻结）
 
-`docs/DEV-MULTI-WORKER-TRAFFIC-CONTROL.md` 已上线并完成 50 Tick 验收：原单 Worker 连续 `MOVE_DESTINATION_OCCUPIED` 风暴消失，当前使用短 TTL dynamic blocker、每 Tick destination/edge reservation 与 Core ingress queue。后续仅基于 path length、ingress wait、harvest-to-deposit latency 与资源吞吐调参；没有新的事件级 P0 不改 reservation/queue 语义。
+`docs/DEV-MULTI-WORKER-TRAFFIC-CONTROL.md` 已上线并完成 50 Tick 验收：原单 Worker 连续 `MOVE_DESTINATION_OCCUPIED` 风暴消失，当前使用短 TTL dynamic blocker、每 Tick destination/edge reservation 与 Core ingress queue。随后已修复远端 carrier 被全局 ingress hold 的 P1：仅 Core Manhattan 距离 `<=3` 的非队首才单列，远端 carrier 保持前进。后续仅基于 path length、ingress wait、harvest-to-deposit latency 与资源吞吐调参；没有新的事件级 P0 不改 reservation/queue 语义。
 
 ## 8. 后续策略调整门
 

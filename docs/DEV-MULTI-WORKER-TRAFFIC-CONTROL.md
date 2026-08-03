@@ -315,6 +315,29 @@ RSS: ~19 MB
 
 交通层目前冻结；下一步只用已记录的 `path_length`、ingress wait、harvest-to-deposit latency 和资源/已结算 Tick 做参数评审，不再修改 reservation/queue 语义，除非出现新的事件级 P0。
 
+## 11.1 Ingress staging 吞吐修复（已上线）
+
+交通层首次上线后发现新的 P1：所有非队首 carrier 无论距 Core 多远均 `CORE_INGRESS_HOLD`，队列可增长到 6，安全但人为拉长交付时延。修复 `af6722b` 将 hold 限制为 Core Manhattan 距离 `<= 3`；远端 carrier 仍通过 reservation 前进，只有进入最后 ingress 区域才单列。
+
+线上验收：
+
+```text
+CI + pxed staged 47 tests: PASS
+new session: 15/15 HTTP 202, 15 Agent received
+UNIT_MOVE_SUCCEEDED: 97
+UNIT_MOVE_FAILED: 0
+DEPOSIT_SUCCEEDED: 1
+远端 6 carrier 全部继续向 Core 前进；队首到达并交付
+resources: 2 → 3
+CORE_INGRESS_HOLD: 0（样本中尚未进入 <=3 staging 区）
+```
+
+### 11.2 未归因资源突变审计
+
+旧 session 出现 `resources 30 → 0`、population 仍为 7、Core ID/state/hp/shield 未变化，且 journal 没有 `CORE_SPAWN_SUCCEEDED`、Core destroyed 或 upkeep 事件。不能将它归因为本 Agent 收益/损失，也不能据此调角色半径或 cap。
+
+已上线只读审计 `cff81a3`：每 plan 记录 `upkeep_next_tick` 与受控 Core 的 `hp/shield/state`。新样本显示 `upkeep_next_tick=0`、Core `NORMAL/hp=5/shield=5`。若资源再次突变，必须先检查这三个权威字段和完整 state/events；未经归因不得改变经济策略。
+
 ## 12. 自审
 
 - 找到的是当前 state/events 证实的动态交通死锁，不是猜测性优化。
