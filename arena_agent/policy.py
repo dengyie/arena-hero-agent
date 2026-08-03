@@ -493,9 +493,10 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
                 memory.traffic.holds[worker.id] = "CORE_FULL_HOLD"
         actor = evictor or leader
         if actor is not None:
+            external_over_cap = len(workers) > MAX_ECONOMY_WORKERS
             recovery_allowed = (
                 actor is leader and state.tick >= memory.recovery_cooldown_until
-                and state.resources >= 5 and len(workers) < MAX_ECONOMY_WORKERS
+                and state.resources >= 5
                 and not memory.ledger.core_damage_ticks
                 and all(other.position != state.core_position for other in workers if other.id != actor.id)
             )
@@ -509,7 +510,9 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
                     if actor is evictor:
                         return _plan(actions, memory, policy_state="CORE_FULL_EVICT", target=state.core_position)
                     core_action = {"type": "SPAWN", "unit_type": "WORKER"}
-                    return _plan(actions, memory, policy_state="CORE_FULL_RECOVERY", target=state.core_position, core_action=core_action)
+                    policy_state = ("CORE_FULL_EXTERNAL_CAP_RECOVERY" if external_over_cap
+                                    else "CORE_FULL_RECOVERY")
+                    return _plan(actions, memory, policy_state=policy_state, target=state.core_position, core_action=core_action)
         return _plan(actions, memory, policy_state="CORE_FULL")
 
     # Task assignment: cargo, risk, visible resource, then bounded frontier.

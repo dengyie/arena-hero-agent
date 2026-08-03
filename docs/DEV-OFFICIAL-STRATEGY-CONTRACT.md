@@ -206,7 +206,27 @@ Core action: NORMAL Core、resources >= 10、无 Core full/recent Core damage �
 
 Core 防守绝不覆盖 Core full recovery，也不改变 Worker/traffic/ingress/cap=8。线上 `bd467da` 新 session 验收为 12/12 HTTP 202、95 次 `UNIT_MOVE_SUCCEEDED`、1 次 `DEPOSIT_SUCCEEDED`；Core `NORMAL/hp=5/shield=5/upkeep=0`，因此正确没有 Core action，新经济摘要字段已写入 journal。只有出现权威缺口时才会发官方合法 action，并以 `CORE_HEAL_SUCCEEDED` / `CORE_REPAIR_SUCCEEDED` 验收；当前尚无该真实事件，不宣称已验证防守收益。
 
-## 9. 发布与回滚
+## 9.2 Review P0/P1 修复：认证、外部人口与重启基线
+
+已修复的 review 结论：
+
+```text
+P0  curl 认证材料不再进入 argv：Bearer/Cookie/CSRF 放入 0600 curl config，
+    request body 放入 0600 临时文件；所有临时材料 finally 清理。
+
+P1  普通经济生产仍固定 Worker cap=8；但已经发生 CORE_RESOURCE_FULL 时，
+    若 Core 格单 carrier 可安全撤离、资源>=5、无近期 Core 伤害、无冷却，
+    即使外部 Manual 已使 Worker 超 cap，也可执行唯一的当前满仓恢复 SPAWN。
+    policy_state=CORE_FULL_EXTERNAL_CAP_RECOVERY，便于独立审计。
+
+P1  source audit 在每次进程启动第一份 state 记录 baseline worker count/population。
+    baseline Worker 或 population 超 Agent cap 时，window_contaminated=true；
+    不再把重启后的外部人口背景当成纯 Agent 经济窗口。
+```
+
+这不启用普通 cap 外扩张、战斗、Beacon 或 Core migration。任何 exceptional recovery 的成功仍必须由下一 state 的 `CORE_SPAWN_SUCCEEDED` 和后续 `DEPOSIT_SUCCEEDED` 验收。
+
+## 10. 发布与回滚
 
 ```text
 local unit tests + compileall + shell syntax + diff check

@@ -4,7 +4,8 @@ from unittest.mock import mock_open, patch
 from arena_agent.allocator import allocate_visible_resources
 from arena_agent.model import snapshot_from_state
 from arena_agent.path import PathResult
-from arena_agent.__main__ import PermanentAuthError, allocator_metrics, post_plan, record_received_source
+from arena_agent.__main__ import (PermanentAuthError, allocator_metrics, post_plan,
+                                  record_received_source, record_session_baseline)
 from pathlib import Path
 from arena_agent.policy import (
     ExplorationMemory, MAX_BAND_RADIUS, MAX_ECONOMY_WORKERS, PATH_NODE_CAP,
@@ -62,6 +63,26 @@ class AgentTests(unittest.TestCase):
             "eligible": 3, "visible_resources": 3, "matched": 2,
             "unmatched_eligible": 1, "resource_starved": False, "total_cost": 900,
         })
+
+    def test_session_baseline_marks_external_over_cap_contamination(self):
+        audit = {"manual_interventions": 0, "external_core_actions": 0,
+                 "window_contaminated": False, "last_received": None,
+                 "baseline_recorded": False, "baseline_contaminated": False,
+                 "baseline_worker_count": None, "baseline_over_worker_cap": False}
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        workers = [
+            {"kind": "UNIT", "id": f"worker-{index}", "controlled": True,
+             "position": [index + 1, 0], "unit_type": "WORKER", "cargo": 0}
+            for index in range(MAX_ECONOMY_WORKERS + 1)
+        ]
+        snapshot = snapshot_from_state(1, {"status": "ACTIVE", "resources": 0,
+            "population": 10, "objects": [core, *workers], "events": []})
+        record_session_baseline(audit, snapshot)
+        self.assertTrue(audit["window_contaminated"])
+        self.assertEqual(audit["baseline_worker_count"], MAX_ECONOMY_WORKERS + 1)
+        self.assertTrue(audit["baseline_over_worker_cap"])
+        record_session_baseline(audit, snapshot)
+        self.assertEqual(audit["baseline_worker_count"], MAX_ECONOMY_WORKERS + 1)
 
     def test_received_source_audit_marks_manual_core_action_only(self):
         audit = {"manual_interventions": 0, "external_core_actions": 0,
@@ -756,6 +777,24 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(p.unit_actions["carrier-b"], {"type": "MOVE", "direction": "UP"})
         self.assertIsNone(p.core_action)
 
+    def test_external_over_cap_core_full_recovery_remains_live(self):
+        mem = ExplorationMemory()
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        workers = [
+            {"kind": "UNIT", "id": f"worker-{index}", "controlled": True,
+             "position": [0, 0] if index == 0 else [index, 0],
+             "unit_type": "WORKER", "cargo": 1 if index == 0 else 0}
+            for index in range(MAX_ECONOMY_WORKERS + 1)
+        ]
+        full = {"event_id": "full-over-cap", "event_type": "DEPOSIT_FAILED",
+                "reason_code": "CORE_RESOURCE_FULL", "actor_id": "worker-0", "position": [0, 0]}
+        state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 50,
+            "population": 10, "objects": [core, *workers], "events": [full]})
+        plan = economy_plan(state, mem)
+        self.assertEqual(plan.policy_state, "CORE_FULL_EXTERNAL_CAP_RECOVERY")
+        self.assertEqual(plan.core_action, {"type": "SPAWN", "unit_type": "WORKER"})
+        self.assertEqual(plan.unit_actions["worker-0"], {"type": "MOVE", "direction": "UP"})
+
     def test_core_spawn_failure_applies_recovery_cooldown(self):
         mem = ExplorationMemory()
         events = [
@@ -846,6 +885,22 @@ class AgentTests(unittest.TestCase):
         conflict = asyncio.run(run("409", '{"accepted":false,"error":"IDEMPOTENCY_CONFLICT"}'))
         self.assertTrue(stale["stale_tick"])
         self.assertNotIn("stale_tick", conflict)
+
+    def test_curl_argv_does_not_contain_authentication_material(self):
+        token, cookie, csrf = "top-secret-token", "session=top-secret-cookie", "top-secret-csrf"
+        with patch("arena_agent.__main__.subprocess.run") as mocked:
+            mocked.return_value = type("Completed", (), {
+                "returncode": 0, "stdout": "202", "stderr": ""
+            })()
+            with patch("builtins.open", mock_open(read_data='{}')):
+                result = asyncio.run(post_plan(token, 9, {"unit_actions": {}}, False, cookie, csrf))
+        self.assertEqual(result["status"], 202)
+        argv = mocked.call_args.args[0]
+        self.assertIn("--config", argv)
+        self.assertNotIn(token, argv)
+        self.assertNotIn(cookie, argv)
+        self.assertNotIn(csrf, argv)
+        self.assertNotIn("Authorization:", " ".join(argv))
 
     def test_command_auth_failure_is_permanent(self):
         async def run():

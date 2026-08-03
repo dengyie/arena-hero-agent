@@ -14,7 +14,7 @@ from urllib.request import Request, ProxyHandler, build_opener
 
 from .journal import Journal
 from .model import snapshot_from_state
-from .policy import ExplorationMemory, economy_plan, step_position
+from .policy import MAX_ECONOMY_WORKERS, ExplorationMemory, economy_plan, step_position
 
 LOG = logging.getLogger("arena_agent")
 WS_URL = "wss://api.arenahero.io/api/v1/game/ws"
@@ -41,6 +41,22 @@ def record_received_source(audit: dict[str, Any], received: Any) -> dict[str, An
         if core_action:
             audit["external_core_actions"] += 1
     return payload
+
+
+def record_session_baseline(audit: dict[str, Any], snapshot: Any) -> None:
+    """Flag a restart baseline that already exceeds the Agent's worker cap."""
+    if audit.get("baseline_recorded"):
+        return
+    workers = len(snapshot.workers)
+    audit["baseline_recorded"] = True
+    audit["baseline_worker_count"] = workers
+    audit["baseline_population"] = snapshot.population
+    audit["baseline_over_worker_cap"] = workers > MAX_ECONOMY_WORKERS
+    audit["baseline_contaminated"] = (
+        workers > MAX_ECONOMY_WORKERS or snapshot.population > MAX_ECONOMY_WORKERS
+    )
+    if audit["baseline_contaminated"]:
+        audit["window_contaminated"] = True
 
 
 def allocator_metrics(snapshot, matched: int, total_cost: int) -> dict[str, Any]:
@@ -76,21 +92,30 @@ async def post_plan(token: str, tick: int, plan: dict[str, Any], dry_run: bool, 
         # Python's urllib client is challenged. Secrets stay in curl config
         # stdin and never appear in argv or the journal.
         body_path = ""
+        request_path = ""
+        config_path = ""
         try:
             with tempfile.NamedTemporaryFile(prefix="arena-response-", mode="wb", delete=False) as f:
                 body_path = f.name
-            os.chmod(body_path, 0o600)
+            with tempfile.NamedTemporaryFile(prefix="arena-request-", mode="wb", delete=False) as f:
+                request_path = f.name
+                f.write(raw)
+            with tempfile.NamedTemporaryFile(prefix="arena-curl-", mode="w", delete=False) as f:
+                config_path = f.name
+                f.write("header = \"Authorization: Bearer " + token + "\"\n")
+                f.write("header = \"Content-Type: application/json\"\n")
+                f.write("header = \"Idempotency-Key: " + key + "\"\n")
+                if cookie:
+                    f.write("header = \"Cookie: " + cookie + "\"\n")
+                    f.write("header = \"Origin: https://app.arenahero.io\"\n")
+                if csrf:
+                    f.write("header = \"X-CSRF-Token: " + csrf + "\"\n")
+            for path in (body_path, request_path, config_path):
+                os.chmod(path, 0o600)
             cmd = ["curl", "--noproxy", "*", "--silent", "--show-error", "--max-time", "5",
-                   "--request", "POST", "--url", HTTP_URL,
-                   "--header", "Authorization: Bearer " + token,
-                   "--header", "Content-Type: application/json",
-                   "--header", "Idempotency-Key: " + key,
-                   "--data-raw", raw.decode(), "--output", body_path,
+                   "--request", "POST", "--url", HTTP_URL, "--config", config_path,
+                   "--data-binary", "@" + request_path, "--output", body_path,
                    "--write-out", "%{http_code}"]
-            if cookie:
-                cmd += ["--header", "Cookie: " + cookie, "--header", "Origin: https://app.arenahero.io"]
-            if csrf:
-                cmd += ["--header", "X-CSRF-Token: " + csrf]
             completed = subprocess.run(cmd, text=True, capture_output=True, timeout=8,
                                        env={**os.environ, "NO_PROXY": "*", "no_proxy": "*"})
             if completed.returncode != 0:
@@ -99,11 +124,12 @@ async def post_plan(token: str, tick: int, plan: dict[str, Any], dry_run: bool, 
             with open(body_path, encoding="utf-8") as response_file:
                 body = response_file.read()
         finally:
-            if body_path:
-                try:
-                    os.unlink(body_path)
-                except FileNotFoundError:
-                    pass
+            for path in (body_path, request_path, config_path):
+                if path:
+                    try:
+                        os.unlink(path)
+                    except FileNotFoundError:
+                        pass
         if not status.isdigit():
             raise RuntimeError("curl response missing status")
         result = {"status": int(status), "body": json.loads(body or "{}")}
@@ -137,7 +163,10 @@ async def run(args: argparse.Namespace) -> int:
     journal = Journal(args.journal)
     memory = ExplorationMemory()
     source_audit = {"manual_interventions": 0, "external_core_actions": 0,
-                    "window_contaminated": False, "last_received": None}
+                    "window_contaminated": False, "last_received": None,
+                    "baseline_recorded": False, "baseline_contaminated": False,
+                    "baseline_worker_count": None, "baseline_population": None,
+                    "baseline_over_worker_cap": False}
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     if cookie:
         headers["Cookie"] = cookie
@@ -171,6 +200,7 @@ async def run(args: argparse.Namespace) -> int:
                         if "tick" not in locals():
                             raise ProtocolError("state arrived before tick")
                         snapshot = snapshot_from_state(tick, msg["data"])
+                        record_session_baseline(source_audit, snapshot)
                         plan = economy_plan(snapshot, memory)
                         result = await post_plan(token, tick, plan.as_dict(), args.dry_run, cookie, csrf)
                         raw_state = msg["data"]
@@ -227,6 +257,10 @@ async def run(args: argparse.Namespace) -> int:
                             "external_core_actions": source_audit["external_core_actions"],
                             "window_contaminated": source_audit["window_contaminated"],
                             "last_received": source_audit["last_received"],
+                            "baseline_contaminated": source_audit["baseline_contaminated"],
+                            "baseline_worker_count": source_audit["baseline_worker_count"],
+                            "baseline_population": source_audit["baseline_population"],
+                            "baseline_over_worker_cap": source_audit["baseline_over_worker_cap"],
                         }
                         state_summary["policy_state"] = plan.policy_state
                         state_summary["active_target"] = plan.active_target

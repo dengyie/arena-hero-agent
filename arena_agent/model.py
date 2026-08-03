@@ -30,6 +30,7 @@ class Snapshot:
     tick: int
     status: str
     resources: int
+    population: int
     resource_capacity: int
     core_id: str | None
     core_position: Position | None
@@ -99,7 +100,7 @@ def snapshot_from_state(tick: int, data: dict[str, Any]) -> Snapshot:
     population = int(data.get("population", len(units)))
     return Snapshot(
         tick=int(tick), status=str(data.get("status", "UNKNOWN")),
-        resources=int(data.get("resources", 0)),
+        resources=int(data.get("resources", 0)), population=population,
         resource_capacity=max(10, population * 5),
         core_id=core_id, core_position=core_position,
         core_hp=core_hp, core_shield=core_shield, core_state=core_state,
