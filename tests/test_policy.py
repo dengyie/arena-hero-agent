@@ -8,7 +8,7 @@ from arena_agent.__main__ import (PermanentAuthError, allocator_metrics, post_pl
                                   record_received_source, record_session_baseline)
 from pathlib import Path
 from arena_agent.policy import (
-    ExplorationMemory, MAX_BAND_RADIUS, MAX_ECONOMY_WORKERS, PATH_NODE_CAP,
+    ExplorationMemory, MAX_BAND_RADIUS, MAX_ECONOMY_WORKERS, MAX_EXTERNAL_RECOVERY_WORKERS, PATH_NODE_CAP,
     economy_plan, first_step, plan_path,
 )
 from arena_agent.journal import Journal
@@ -819,6 +819,24 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(plan.policy_state, "CORE_FULL_EXTERNAL_CAP_RECOVERY")
         self.assertEqual(plan.core_action, {"type": "SPAWN", "unit_type": "WORKER"})
         self.assertEqual(plan.unit_actions["worker-0"], {"type": "MOVE", "direction": "UP"})
+
+    def test_external_recovery_ceiling_holds_without_spawn(self):
+        mem = ExplorationMemory()
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        workers = [
+            {"kind": "UNIT", "id": f"worker-{index}", "controlled": True,
+             "position": [0, 0] if index == 0 else [index, 0],
+             "unit_type": "WORKER", "cargo": 1 if index == 0 else 0}
+            for index in range(MAX_EXTERNAL_RECOVERY_WORKERS)
+        ]
+        full = {"event_id": "full-at-ceiling", "event_type": "DEPOSIT_FAILED",
+                "reason_code": "CORE_RESOURCE_FULL", "actor_id": "worker-0", "position": [0, 0]}
+        state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 60,
+            "population": 13, "objects": [core, *workers], "events": [full]})
+        plan = economy_plan(state, mem)
+        self.assertEqual(plan.policy_state, "CORE_FULL_EXTERNAL_CAP_HOLD")
+        self.assertIsNone(plan.core_action)
+        self.assertEqual(plan.unit_actions["worker-0"], {"type": "WAIT"})
 
     def test_core_spawn_failure_applies_recovery_cooldown(self):
         mem = ExplorationMemory()

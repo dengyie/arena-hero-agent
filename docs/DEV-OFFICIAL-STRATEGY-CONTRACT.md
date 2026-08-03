@@ -219,7 +219,12 @@ P1  普通经济生产仍固定 Worker cap=8；但已经发生 CORE_RESOURCE_FUL
     即使外部 Manual 已使 Worker 超 cap，也可执行唯一的当前满仓恢复 SPAWN。
     policy_state=CORE_FULL_EXTERNAL_CAP_RECOVERY，便于独立审计。
 
-P1  source audit 在每次进程启动第一份 state 记录 baseline worker count/population。
+P1  exceptional recovery 使用独立总 Worker ceiling=12，而非普通 cap=8：
+    9–11 Worker 可仅在已发生 CORE_RESOURCE_FULL 的严格门下执行一次解锁 SPAWN；
+    >=12 Worker 则 policy_state=CORE_FULL_EXTERNAL_CAP_HOLD，不再自动生产，
+    留给人工审计/单独的人口管理设计。
+
+P1  source audit 在每次进程启动第一份 state 记录 baseline worker count/population：
     baseline Worker 或 population 超 Agent cap 时，window_contaminated=true；
     不再把重启后的外部人口背景当成纯 Agent 经济窗口。
 ```

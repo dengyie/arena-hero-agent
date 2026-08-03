@@ -25,6 +25,7 @@ SPAWN_WINDOW_TICKS = 20
 RISK_WINDOW_TICKS = 20
 WORKER_FRONTIER_RADII = (21, 33, 51, 75)
 MAX_ECONOMY_WORKERS = 8
+MAX_EXTERNAL_RECOVERY_WORKERS = 12
 CAPACITY_RECOVERY_COOLDOWN = 4
 TRAFFIC_EDGE_TTL = 2
 TRAFFIC_CORE_TTL = 4
@@ -505,7 +506,8 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
                 and not memory.ledger.core_damage_ticks
                 and all(other.position != state.core_position for other in workers if other.id != actor.id)
             )
-            if actor is evictor or recovery_allowed:
+            recovery_ceiling_reached = len(workers) >= MAX_EXTERNAL_RECOVERY_WORKERS
+            if actor is evictor or (recovery_allowed and not recovery_ceiling_reached):
                 occupied = {pos for ident, pos in positions.items() if ident != actor.id}
                 direction = next((d for d in DIRECTIONS if step_position(actor.position, d) not in obstacles | occupied), None)
                 if direction:
@@ -518,6 +520,10 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
                     policy_state = ("CORE_FULL_EXTERNAL_CAP_RECOVERY" if external_over_cap
                                     else "CORE_FULL_RECOVERY")
                     return _plan(actions, memory, policy_state=policy_state, target=state.core_position, core_action=core_action)
+        if (actor is leader and recovery_allowed
+                and len(workers) >= MAX_EXTERNAL_RECOVERY_WORKERS):
+            return _plan(actions, memory, policy_state="CORE_FULL_EXTERNAL_CAP_HOLD",
+                         target=state.core_position)
         return _plan(actions, memory, policy_state="CORE_FULL")
 
     # Task assignment: cargo, risk, visible resource, then bounded frontier.
