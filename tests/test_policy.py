@@ -25,6 +25,24 @@ class AgentTests(unittest.TestCase):
         }
         data.update(kw)
         return snapshot_from_state(1, data)
+    def test_dynamic_move_failure_preserves_active_frontier_target(self):
+        mem = ExplorationMemory()
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        worker = {"kind": "UNIT", "id": "worker", "controlled": True,
+                  "position": [1, 0], "unit_type": "WORKER", "cargo": 0}
+        initial = snapshot_from_state(1, {"status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [core, worker], "events": []})
+        mem.observe(initial)
+        mem.active_targets["worker"] = (10, 0)
+        mem.traffic.mark_planned_move("worker", (1, 0), "RIGHT")
+        failed = {"event_id": "move-failed", "event_type": "UNIT_MOVE_FAILED",
+                  "reason_code": "MOVE_DESTINATION_OCCUPIED", "actor_id": "worker", "position": [1, 0]}
+        mem.apply_events(snapshot_from_state(2, {"status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [core, worker], "events": [failed]}))
+        self.assertEqual(mem.active_targets["worker"], (10, 0))
+        self.assertNotIn((10, 0), mem.failed_targets)
+        self.assertTrue(mem.traffic.is_edge_blocked("worker", (1, 0), "RIGHT", 2))
+
     def test_allocator_metrics_distinguish_resource_starvation_from_unmatched_work(self):
         core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
         workers = [

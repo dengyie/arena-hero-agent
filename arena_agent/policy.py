@@ -223,10 +223,6 @@ class ExplorationMemory:
             elif kind == "UNIT_MOVE_FAILED" and pos is not None:
                 reason = str(event.get("reason_code", "UNKNOWN"))
                 self.traffic.mark_failure(actor_id, pos, reason, state.tick)
-                target = self.active_targets.pop(actor_id, None)
-                if target is not None:
-                    failures, _ = self.failed_targets.get(target, (0, 0))
-                    self.failed_targets[target] = (failures + 1, state.tick + min(12, 2 + failures * 2))
             elif kind == "UNIT_MOVE_SUCCEEDED":
                 memory_edge = self.traffic.last_planned_edges.pop(actor_id, None)
                 if memory_edge is not None:
