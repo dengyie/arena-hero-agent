@@ -216,6 +216,12 @@ async def run(args: argparse.Namespace) -> int:
                             "resource_overflow_destroyed": memory.ledger.resource_overflow_amount,
                             "core_defense_events": list(memory.ledger.core_defense_events)[-8:],
                             "core_action": (plan.core_action or {}).get("type"),
+                            "allocator": {
+                                "eligible": sum(1 for worker in snapshot.workers
+                                                if worker.cargo <= 0 and (worker.hp is None or worker.hp > 1)),
+                                "matched": memory.allocation_count,
+                                "total_cost": memory.allocation_total_cost,
+                            },
                         }
                         state_summary["traffic"] = {
                             "holds": dict(memory.traffic.holds),

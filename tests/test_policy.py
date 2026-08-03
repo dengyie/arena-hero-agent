@@ -1,7 +1,9 @@
 import asyncio
 import unittest
 from unittest.mock import mock_open, patch
+from arena_agent.allocator import allocate_visible_resources
 from arena_agent.model import snapshot_from_state
+from arena_agent.path import PathResult
 from arena_agent.__main__ import PermanentAuthError, post_plan
 from pathlib import Path
 from arena_agent.policy import (
@@ -23,6 +25,39 @@ class AgentTests(unittest.TestCase):
         }
         data.update(kw)
         return snapshot_from_state(1, data)
+    def test_global_resource_allocator_beats_worker_greedy_order(self):
+        s = snapshot_from_state(1, {"status": "ACTIVE", "resources": 0, "population": 2,
+            "objects": [
+                {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]},
+                {"kind": "UNIT", "id": "worker-a", "controlled": True,
+                 "position": [1, 0], "unit_type": "WORKER", "cargo": 0},
+                {"kind": "UNIT", "id": "worker-b", "controlled": True,
+                 "position": [2, 0], "unit_type": "WORKER", "cargo": 0},
+            ], "events": []})
+        resources = ((10, 0), (20, 0))
+        lengths = {
+            ("worker-a", (10, 0)): 1, ("worker-a", (20, 0)): 2,
+            ("worker-b", (10, 0)): 2, ("worker-b", (20, 0)): 100,
+        }
+        def path_for(worker, resource):
+            length = lengths[worker.id, resource]
+            return PathResult("RIGHT", "FOUND", length, length, resource)
+        result = allocate_visible_resources(s.workers, resources, path_for)
+        self.assertEqual([(item.worker_id, item.resource) for item in result], [
+            ("worker-a", (20, 0)), ("worker-b", (10, 0)),
+        ])
+
+    def test_resource_allocator_excludes_unreachable_pairs(self):
+        s = snapshot_from_state(1, {"status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [
+                {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]},
+                {"kind": "UNIT", "id": "worker", "controlled": True,
+                 "position": [1, 0], "unit_type": "WORKER", "cargo": 0},
+            ], "events": []})
+        result = allocate_visible_resources(s.workers, ((10, 0),),
+            lambda worker, resource: PathResult(None, "NO_PATH", 0, 10, None))
+        self.assertEqual(result, ())
+
     def test_official_upkeep_and_overflow_events_are_idempotently_accounted(self):
         mem = ExplorationMemory()
         core = {"kind": "CORE", "id": "core", "controlled": True,
