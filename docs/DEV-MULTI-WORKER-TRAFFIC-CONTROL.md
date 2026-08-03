@@ -1,6 +1,6 @@
 # Arena Hero 多 Worker 交通、资源与风险控制设计
 
-状态：设计完成，待开发授权
+状态：已上线；50 Tick 交通/经济验收通过。
 日期：2026-08-03
 前置：`DEV-STRATEGY-REFACTOR.md`；当前运行态以 Obsidian `Note/Infra/pxed 挂机脚本运维手册.md` 的 Arena 章节为准。
 范围：仅 `arena-hero-agent`。只使用当前官方 Agent state；不使用浏览器、迷雾坐标、历史敌方位置或新守护进程。
@@ -296,6 +296,24 @@ T4: Ranger SHOOT，需射线/目标/SHOT_MISSED 事件级设计
 T5: Beacon、战斗、Core move
 T6: cap > 8，需要人口维护费/吞吐/RSS 窗口证明
 ```
+
+## 11. 线上验收结果
+
+上线版本：`ad1bf98`。
+
+```text
+CI: PASS
+pxed staged: 46 tests + compileall PASS
+new session: 72/72 HTTP 202, 72 Agent received
+50 Tick window: 50/50 HTTP 202, UNIT_MOVE_FAILED=0
+经济: 3 DEPOSIT_SUCCEEDED, 2 HARVEST_SUCCEEDED
+traffic: CORE_INGRESS_HOLD=116, repeated_failures=0
+RSS: ~19 MB
+```
+
+原先 `ca38...` 在同一位置连续请求 RIGHT 并连续 `MOVE_DESTINATION_OCCUPIED` 的失败风暴已消失。新日志显示 carrier ingress queue 实际推进：队首依次变化并产生 `DEPOSIT_SUCCEEDED`，资源在观察窗口内 `27 → 28`。因此 `CORE_INGRESS_HOLD` 是可解释的吞吐排队，而不是静默死锁。
+
+交通层目前冻结；下一步只用已记录的 `path_length`、ingress wait、harvest-to-deposit latency 和资源/已结算 Tick 做参数评审，不再修改 reservation/queue 语义，除非出现新的事件级 P0。
 
 ## 12. 自审
 

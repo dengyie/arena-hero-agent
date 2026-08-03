@@ -350,18 +350,9 @@ C. 受伤 Worker 风险恢复
 
 验收：synthetic sequence 覆盖 hp=1 返航/HEAL、角色半径、资源与 cargo 抢占；线上只以 `UNIT_HEAL_SUCCEEDED`、`DEPOSIT_SUCCEEDED`、`path_length` 日志和 50 Tick 指标判断，不将 HEAL plan 或 HTTP 202 当成功。
 
-### 7.2 下一 P0：多 Worker 交通控制（待开发授权）
+### 7.2 多 Worker 交通控制（已上线，冻结）
 
-当前 8 Worker 运行已经暴露单 Worker 动态交通死锁：`ca38...` 在同一坐标连续 50 Tick 收到 `MOVE_DESTINATION_OCCUPIED`，并反复请求同一方向；另有 Core 邻域 `CELL_UNIT_LIMIT`。详细根因、数据模型、reservation、Core ingress queue、失败矩阵、测试和上线门见 `docs/DEV-MULTI-WORKER-TRAFFIC-CONTROL.md`。
-
-在该交通批完成前：
-
-```text
-- 不提高 Worker cap > 8
-- 不调整 frontier 半径/收益权重
-- 不启用 Ranger、Beacon、追击或 Core 迁移
-- 不把动态失败加入永久障碍
-```
+`docs/DEV-MULTI-WORKER-TRAFFIC-CONTROL.md` 已上线并完成 50 Tick 验收：原单 Worker 连续 `MOVE_DESTINATION_OCCUPIED` 风暴消失，当前使用短 TTL dynamic blocker、每 Tick destination/edge reservation 与 Core ingress queue。后续仅基于 path length、ingress wait、harvest-to-deposit latency 与资源吞吐调参；没有新的事件级 P0 不改 reservation/queue 语义。
 
 ## 8. 后续策略调整门
 
