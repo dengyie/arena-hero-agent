@@ -291,6 +291,17 @@ metric_window_contaminated = true
 
 它不改变 `Plan`、Core action、Worker action、traffic、allocator 或生产上限。`014eb30` 已上线并验证新 session 13/13 HTTP 202：`source_audit` 当前为 `MANUAL=0 / window_contaminated=false / last_received=AGENT`，且保留 `DEPOSIT_SUCCEEDED`。未来收到 Manual plan 时窗口会自动标记；只有无外部 source 干预的完整 50 resolved Tick 才能作为策略调参样本。
 
+## 9.3 资源供给与匹配指标（已上线，行为零变更）
+
+无污染 50 Tick 显示 `matched=0` 的主因是当前私有视野资源稀少，而不是 allocator 失败。`85446df` 现将 allocator 摘要拆为：
+
+```text
+eligible / visible_resources / matched / unmatched_eligible
+resource_starved / total_cost
+```
+
+新 session 实证 `visible_resources 4→0→1` 时 `matched 4→0→1`，仅资源为 0 时 `resource_starved=true`。这一批不改 Plan 或调度；后续只在 `visible_resources>0 && unmatched_eligible` 持续偏高时审查 path/role 参数。出现的 `MOVE_CONTESTED` 与 `MOVE_DESTINATION_OCCUPIED` 均在下一 Tick 改道成功，尚无 traffic P0。
+
 ## 10. Explicit Non-goals and Review Gates
 
 - No new long-running daemon, wrapper script or SDK migration.
