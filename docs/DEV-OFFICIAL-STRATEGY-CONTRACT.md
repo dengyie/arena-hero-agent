@@ -229,7 +229,7 @@ P1  source audit 在每次进程启动第一份 state 记录 baseline worker cou
     不再把重启后的外部人口背景当成纯 Agent 经济窗口。
 ```
 
-这不启用普通 cap 外扩张、战斗、Beacon 或 Core migration。exceptional recovery 已完成真实线上闭环：baseline `9 Workers / population=10` 被标记为污染后，收到 `CORE_RESOURCE_FULL`，Agent 发出唯一 `CORE_FULL_EXTERNAL_CAP_RECOVERY`，并收到后续 `CORE_SPAWN_SUCCEEDED` 与 `DEPOSIT_SUCCEEDED`；新 session 首段 10/10 HTTP 202。
+这不启用普通 cap 外扩张、战斗、Beacon 或 Core migration。exceptional recovery 已完成两次真实线上闭环：外部 baseline 被标记污染后，每次收到 `CORE_RESOURCE_FULL`，Agent 只发一条 `CORE_FULL_EXTERNAL_CAP_RECOVERY`，随后收到 `CORE_SPAWN_SUCCEEDED` 与 `DEPOSIT_SUCCEEDED`。最新官方 tier 验收为 population `15→16`、18/18 HTTP 202、3 次 `DEPOSIT_SUCCEEDED`；普通 cap 仍为 8，population 永不由此跨入 19 以上的 upkeep tier 1。
 
 ## 10. 发布与回滚
 
