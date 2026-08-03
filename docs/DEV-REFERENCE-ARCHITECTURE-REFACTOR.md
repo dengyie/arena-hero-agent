@@ -324,7 +324,7 @@ UNIT_MOVE_FAILED → 仅 traffic TTL，不增加 frontier failure reason
 journal → completed / failed / failure_reasons / active_targets
 ```
 
-这批不调整 frontier 半径、角色分工、traffic 或经济动作；上线后以真实 waypoint 到达和 failure reason 计数验收。
+这批不调整 frontier 半径、角色分工、traffic 或经济动作。已上线首段 9/9 HTTP 202、95 次移动成功、1 次采集、1 次交付；`failure_reasons={}` 与 `active_targets=9` 已写入 journal。当前尚未出现 Worker 抵达 waypoint，因此 `completed=0` 是诚实状态，不宣称已完成 waypoint 闭环。
 
 ## 10. Explicit Non-goals and Review Gates
 
