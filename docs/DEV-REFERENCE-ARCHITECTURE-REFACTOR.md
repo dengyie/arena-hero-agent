@@ -276,7 +276,7 @@ review 发现并修复一项 P1 observability 缺陷：Core full/PAUSE 等跳过
 
 资源 `38 → 40`、population=8/capacity=40，13 个 `CORE_FULL` 是当前 cap=8 的有原因安全状态。失败移动为同一 carrier 在不同位置/方向的 5 次短期动态占位；后续 event 显示替代路径连续成功，未形成同 edge 重试风暴。allocator 在资源可见时真实产生 1–3 个匹配和 `HARVEST_SUCCEEDED`，无资源时 `matched=0/cost=0`。
 
-## 9.2 多 source 干预审计（下一批，行为零变更）
+## 9.2 多 source 干预审计（已上线，行为零变更）
 
 最近 allocator 上线后的 50 Tick 出现 `population=8 → 10`。经同 Tick `received` 审计，新增实体来自 `MANUAL` source 的 `SPAWN VANGUARD` 和 `SPAWN WORKER`，本 Agent 的 `core_action` 全为 `NONE`。因此该窗口不能用于判定 Agent cap、容量控制器或经济策略收益。
 
@@ -289,7 +289,7 @@ external_spawn / external_core_action event correlation
 metric_window_contaminated = true
 ```
 
-它不改变 `Plan`、Core action、Worker action、traffic、allocator 或生产上限。只有无外部 source 干预的完整 50 resolved Tick 才能作为策略调参样本。
+它不改变 `Plan`、Core action、Worker action、traffic、allocator 或生产上限。`014eb30` 已上线并验证新 session 13/13 HTTP 202：`source_audit` 当前为 `MANUAL=0 / window_contaminated=false / last_received=AGENT`，且保留 `DEPOSIT_SUCCEEDED`。未来收到 Manual plan 时窗口会自动标记；只有无外部 source 干预的完整 50 resolved Tick 才能作为策略调参样本。
 
 ## 10. Explicit Non-goals and Review Gates
 
