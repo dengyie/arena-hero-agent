@@ -271,6 +271,8 @@ async def run(args: argparse.Namespace) -> int:
                             "queued": len(memory.frontier_candidates),
                             "completed": len(memory.completed_targets),
                             "failed": len(memory.failed_targets),
+                            "failure_reasons": dict(memory.frontier_failure_reasons),
+                            "active_targets": len(memory.active_targets),
                         }
                         state_summary["path"] = {
                             "status": plan.path_status,

@@ -149,6 +149,7 @@ class ExplorationMemory:
     frontier_candidates: deque[Position] = field(default_factory=deque)
     completed_targets: dict[Position, int] = field(default_factory=dict)
     failed_targets: dict[Position, tuple[int, int]] = field(default_factory=dict)
+    frontier_failure_reasons: dict[str, int] = field(default_factory=dict)
     active_targets: dict[str, Position] = field(default_factory=dict)
     active_target: Position | None = None
     policy_state: str = "BOOT"
@@ -168,6 +169,7 @@ class ExplorationMemory:
         self.frontier_candidates.clear()
         self.completed_targets.clear()
         self.failed_targets.clear()
+        self.frontier_failure_reasons.clear()
         self.active_targets.clear()
         self.active_target = None
         self.core_full = False
@@ -307,6 +309,9 @@ class ExplorationMemory:
             result = plan_path(worker.position, {target}, obstacles, occupied)
             if result.status != "FOUND":
                 self.failed_targets[target] = (failures + 1, state.tick + min(12, 2 + failures * 2))
+                self.frontier_failure_reasons[result.status] = (
+                    self.frontier_failure_reasons.get(result.status, 0) + 1
+                )
                 self.frontier_candidates.append(target)
                 continue
             score = (0 if target not in self.completed_targets else 1, result.path_length,
@@ -541,6 +546,7 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
         desired[worker.id] = (worker, assignment.resource, "RESOURCE")
         resource_reserved.add(assignment.resource)
     for index, worker in enumerate(w for w in workers if w.id not in desired):
+        memory.complete_frontier_if_reached(worker, state.tick)
         target, path = memory.next_frontier(state, worker, obstacles, set(positions.values()) - {worker.position},
                                             frontier_reserved, memory.worker_frontier_radius(index))
         if target is not None:

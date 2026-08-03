@@ -313,6 +313,19 @@ path NO_PATH or NODE_CAP → frontier failed target
 
 上线新 session 的 30 Tick 已出现两次 `MOVE_CONTESTED`，但 `frontier.failed` 保持 `0→0`；265 次成功移动、2 次交付、1 次采集继续发生。资源为零的 Tick 占 26/30，四个可见资源 Tick 均有匹配；当前瓶颈是合法视野供给，不是 frontier/path failure。
 
+## 9.5 Frontier 完成度与失败归因（已开发，待线上验收）
+
+深度 review 发现 `complete_frontier_if_reached()` 已实现但未被 policy 调用，导致 journal 的 `frontier.completed` 永远为零；同时失败只有总量，无法区分 BFS 无路与动态 traffic。现已修复：
+
+```text
+到达 active frontier target → completed_targets +1，并释放该 Worker target
+BFS NO_PATH/NODE_CAP → failed target + failure_reasons[status]
+UNIT_MOVE_FAILED → 仅 traffic TTL，不增加 frontier failure reason
+journal → completed / failed / failure_reasons / active_targets
+```
+
+这批不调整 frontier 半径、角色分工、traffic 或经济动作；上线后以真实 waypoint 到达和 failure reason 计数验收。
+
 ## 10. Explicit Non-goals and Review Gates
 
 - No new long-running daemon, wrapper script or SDK migration.

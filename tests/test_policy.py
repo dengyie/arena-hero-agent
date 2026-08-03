@@ -2,7 +2,7 @@ import asyncio
 import unittest
 from unittest.mock import mock_open, patch
 from arena_agent.allocator import allocate_visible_resources
-from arena_agent.model import snapshot_from_state
+from arena_agent.model import Unit, snapshot_from_state
 from arena_agent.path import PathResult
 from arena_agent.__main__ import (PermanentAuthError, allocator_metrics, post_plan,
                                   record_received_source, record_session_baseline)
@@ -26,6 +26,31 @@ class AgentTests(unittest.TestCase):
         }
         data.update(kw)
         return snapshot_from_state(1, data)
+    def test_frontier_completion_and_path_failure_reason_are_distinct_from_traffic(self):
+        mem = ExplorationMemory()
+        worker = Unit("worker", (3, 0), "WORKER", 0, 2)
+        mem.active_targets["worker"] = (3, 0)
+        mem.complete_frontier_if_reached(worker, 7)
+        self.assertEqual(mem.completed_targets, {(3, 0): 7})
+        self.assertNotIn("worker", mem.active_targets)
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        state = snapshot_from_state(8, {"status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [core, {"kind": "UNIT", "id": "worker", "controlled": True,
+                                 "position": [1, 0], "unit_type": "WORKER", "cargo": 0}], "events": []})
+        mem.frontier_candidates.clear()
+        mem.frontier_candidates.append((3, 0))
+        # Block every cardinal exit from (1, 0), so bounded BFS is truly NO_PATH.
+        mem.next_frontier(state, state.workers[0],
+                          frozenset({(2, 0), (1, 1), (1, -1), (0, 0)}), set())
+        self.assertGreater(mem.frontier_failure_reasons.get("NO_PATH", 0), 0)
+        before = dict(mem.frontier_failure_reasons)
+        event = {"event_id": "traffic-only", "event_type": "UNIT_MOVE_FAILED",
+                 "reason_code": "MOVE_CONTESTED", "actor_id": "worker", "position": [1, 0]}
+        mem.apply_events(snapshot_from_state(9, {"status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [core, {"kind": "UNIT", "id": "worker", "controlled": True,
+                                 "position": [1, 0], "unit_type": "WORKER", "cargo": 0}], "events": [event]}))
+        self.assertEqual(mem.frontier_failure_reasons, before)
+
     def test_dynamic_move_failure_preserves_active_frontier_target(self):
         mem = ExplorationMemory()
         core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
