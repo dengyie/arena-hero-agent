@@ -14,7 +14,8 @@ from urllib.request import Request, ProxyHandler, build_opener
 
 from .journal import Journal
 from .model import snapshot_from_state
-from .policy import MAX_ECONOMY_WORKERS, ExplorationMemory, economy_plan, step_position
+from .policy import (MAX_ECONOMY_WORKERS, MAX_EXTERNAL_RECOVERY_WORKERS,
+                     ExplorationMemory, economy_plan, step_position)
 
 LOG = logging.getLogger("arena_agent")
 WS_URL = "wss://api.arenahero.io/api/v1/game/ws"
@@ -57,6 +58,16 @@ def record_session_baseline(audit: dict[str, Any], snapshot: Any) -> None:
     )
     if audit["baseline_contaminated"]:
         audit["window_contaminated"] = True
+
+
+def population_control_metrics(snapshot: Any) -> dict[str, Any]:
+    worker_count = len(snapshot.workers)
+    return {
+        "worker_count": worker_count,
+        "normal_worker_cap": MAX_ECONOMY_WORKERS,
+        "external_recovery_worker_ceiling": MAX_EXTERNAL_RECOVERY_WORKERS,
+        "external_recovery_ceiling_reached": worker_count >= MAX_EXTERNAL_RECOVERY_WORKERS,
+    }
 
 
 def allocator_metrics(snapshot, matched: int, total_cost: int) -> dict[str, Any]:
@@ -262,6 +273,7 @@ async def run(args: argparse.Namespace) -> int:
                             "baseline_population": source_audit["baseline_population"],
                             "baseline_over_worker_cap": source_audit["baseline_over_worker_cap"],
                         }
+                        state_summary["population_control"] = population_control_metrics(snapshot)
                         state_summary["policy_state"] = plan.policy_state
                         state_summary["active_target"] = plan.active_target
                         state_summary["waypoint"] = plan.waypoint

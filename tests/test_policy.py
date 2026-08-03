@@ -4,7 +4,7 @@ from unittest.mock import mock_open, patch
 from arena_agent.allocator import allocate_visible_resources
 from arena_agent.model import Unit, snapshot_from_state
 from arena_agent.path import PathResult
-from arena_agent.__main__ import (PermanentAuthError, allocator_metrics, post_plan,
+from arena_agent.__main__ import (PermanentAuthError, allocator_metrics, population_control_metrics, post_plan,
                                   record_received_source, record_session_baseline)
 from pathlib import Path
 from arena_agent.policy import (
@@ -87,6 +87,22 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(allocator_metrics(visible, 2, 900), {
             "eligible": 3, "visible_resources": 3, "matched": 2,
             "unmatched_eligible": 1, "resource_starved": False, "total_cost": 900,
+        })
+
+    def test_population_control_metrics_marks_external_recovery_ceiling(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        workers = [
+            {"kind": "UNIT", "id": f"worker-{index}", "controlled": True,
+             "position": [index + 1, 0], "unit_type": "WORKER", "cargo": 0}
+            for index in range(MAX_EXTERNAL_RECOVERY_WORKERS)
+        ]
+        state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 0,
+            "population": MAX_EXTERNAL_RECOVERY_WORKERS, "objects": [core, *workers], "events": []})
+        self.assertEqual(population_control_metrics(state), {
+            "worker_count": MAX_EXTERNAL_RECOVERY_WORKERS,
+            "normal_worker_cap": MAX_ECONOMY_WORKERS,
+            "external_recovery_worker_ceiling": MAX_EXTERNAL_RECOVERY_WORKERS,
+            "external_recovery_ceiling_reached": True,
         })
 
     def test_session_baseline_marks_external_over_cap_contamination(self):
