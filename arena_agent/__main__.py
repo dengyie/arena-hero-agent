@@ -43,6 +43,20 @@ def record_received_source(audit: dict[str, Any], received: Any) -> dict[str, An
     return payload
 
 
+def allocator_metrics(snapshot, matched: int, total_cost: int) -> dict[str, Any]:
+    eligible = sum(1 for worker in snapshot.workers
+                   if worker.cargo <= 0 and (worker.hp is None or worker.hp > 1))
+    visible_resources = len(snapshot.resource_cells)
+    return {
+        "eligible": eligible,
+        "visible_resources": visible_resources,
+        "matched": matched,
+        "unmatched_eligible": max(0, eligible - matched),
+        "resource_starved": bool(snapshot.workers) and not visible_resources,
+        "total_cost": total_cost,
+    }
+
+
 async def post_plan(token: str, tick: int, plan: dict[str, Any], dry_run: bool, cookie: str = "", csrf: str = "") -> dict[str, Any]:
     body = {"tick": tick, **plan}
     if dry_run:
@@ -243,12 +257,7 @@ async def run(args: argparse.Namespace) -> int:
                             "resource_overflow_destroyed": memory.ledger.resource_overflow_amount,
                             "core_defense_events": list(memory.ledger.core_defense_events)[-8:],
                             "core_action": (plan.core_action or {}).get("type"),
-                            "allocator": {
-                                "eligible": sum(1 for worker in snapshot.workers
-                                                if worker.cargo <= 0 and (worker.hp is None or worker.hp > 1)),
-                                "matched": memory.allocation_count,
-                                "total_cost": memory.allocation_total_cost,
-                            },
+                            "allocator": allocator_metrics(snapshot, memory.allocation_count, memory.allocation_total_cost),
                         }
                         state_summary["traffic"] = {
                             "holds": dict(memory.traffic.holds),

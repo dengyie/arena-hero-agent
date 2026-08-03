@@ -4,7 +4,7 @@ from unittest.mock import mock_open, patch
 from arena_agent.allocator import allocate_visible_resources
 from arena_agent.model import snapshot_from_state
 from arena_agent.path import PathResult
-from arena_agent.__main__ import PermanentAuthError, post_plan, record_received_source
+from arena_agent.__main__ import PermanentAuthError, allocator_metrics, post_plan, record_received_source
 from pathlib import Path
 from arena_agent.policy import (
     ExplorationMemory, MAX_BAND_RADIUS, MAX_ECONOMY_WORKERS, PATH_NODE_CAP,
@@ -25,6 +25,26 @@ class AgentTests(unittest.TestCase):
         }
         data.update(kw)
         return snapshot_from_state(1, data)
+    def test_allocator_metrics_distinguish_resource_starvation_from_unmatched_work(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        workers = [
+            {"kind": "UNIT", "id": f"worker-{i}", "controlled": True,
+             "position": [i + 1, 0], "unit_type": "WORKER", "cargo": 0}
+            for i in range(3)
+        ]
+        empty = snapshot_from_state(1, {"status": "ACTIVE", "resources": 0, "population": 3,
+            "objects": [core, *workers], "events": []})
+        self.assertEqual(allocator_metrics(empty, 0, 0), {
+            "eligible": 3, "visible_resources": 0, "matched": 0,
+            "unmatched_eligible": 3, "resource_starved": True, "total_cost": 0,
+        })
+        visible = snapshot_from_state(2, {"status": "ACTIVE", "resources": 0, "population": 3,
+            "objects": [core, *workers, {"kind": "RESOURCE", "positions": [[3, 0], [4, 0], [5, 0]]}], "events": []})
+        self.assertEqual(allocator_metrics(visible, 2, 900), {
+            "eligible": 3, "visible_resources": 3, "matched": 2,
+            "unmatched_eligible": 1, "resource_starved": False, "total_cost": 900,
+        })
+
     def test_received_source_audit_marks_manual_core_action_only(self):
         audit = {"manual_interventions": 0, "external_core_actions": 0,
                  "window_contaminated": False, "last_received": None}
