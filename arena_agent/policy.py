@@ -26,6 +26,7 @@ MAX_ECONOMY_WORKERS = 8
 CAPACITY_RECOVERY_COOLDOWN = 4
 TRAFFIC_EDGE_TTL = 2
 TRAFFIC_CORE_TTL = 4
+CORE_INGRESS_RADIUS = 3
 MAX_DYNAMIC_EDGES = 512
 MAX_DYNAMIC_CELLS = 256
 
@@ -572,7 +573,10 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
     memory.traffic.ingress_queue = tuple(w.id for w in carriers)
 
     for worker, target, kind in sorted(desired.values(), key=lambda item: traffic_priority(item[0], state.core_position)):
-        if kind == "RETURN_CORE" and memory.traffic.ingress_queue and worker.id != memory.traffic.ingress_queue[0]:
+        if (kind == "RETURN_CORE" and memory.traffic.ingress_queue
+                and worker.id != memory.traffic.ingress_queue[0]
+                and state.core_position is not None
+                and abs(worker.position[0] - state.core_position[0]) + abs(worker.position[1] - state.core_position[1]) <= CORE_INGRESS_RADIUS):
             actions[worker.id] = {"type": "WAIT"}
             memory.traffic.holds[worker.id] = "CORE_INGRESS_HOLD"
             continue

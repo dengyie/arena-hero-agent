@@ -23,6 +23,18 @@ class AgentTests(unittest.TestCase):
         }
         data.update(kw)
         return snapshot_from_state(1, data)
+    def test_core_ingress_holds_only_nearby_nonleader_carriers(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        near = {"kind": "UNIT", "id": "near", "controlled": True,
+                "position": [2, 0], "unit_type": "WORKER", "cargo": 1}
+        far = {"kind": "UNIT", "id": "far", "controlled": True,
+               "position": [9, 0], "unit_type": "WORKER", "cargo": 1}
+        s = snapshot_from_state(1, {"status": "ACTIVE", "resources": 5, "population": 2,
+                                     "objects": [core, near, far], "events": []})
+        p = economy_plan(s, ExplorationMemory())
+        self.assertEqual(p.unit_actions["near"], {"type": "MOVE", "direction": "LEFT"})
+        self.assertNotEqual(p.unit_actions["far"], {"type": "WAIT"})
+
     def test_dynamic_move_failure_avoids_same_edge_next_tick(self):
         mem = ExplorationMemory()
         core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
