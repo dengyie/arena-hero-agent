@@ -1,6 +1,6 @@
 # Arena Hero 策略重构主契约
 
-状态：容量 3→4 已线上事件验证；4→5 与 Vanguard `SWEEP_RESOLVED` 待真实条件验证。
+状态：历史演进/实现记录；当前官方事实与策略法律以 `DEV-OFFICIAL-STRATEGY-CONTRACT.md` 为准。
 日期：2026-08-03
 权威运行基线：`Note/Infra/pxed 挂机脚本运维手册.md` 的 `5. Arena Hero Agent`
 范围：仅 `arena-hero-agent`；仅使用官方 Agent API 私有 state；不操作浏览器、Chrome、囤囤鼠、农场或其他 Supervisor 服务。

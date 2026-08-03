@@ -1,6 +1,6 @@
 # Arena Hero 多 Worker 交通、资源与风险控制设计
 
-状态：已上线；50 Tick 交通/经济验收通过。
+状态：已上线交通子设计/验收记录；当前官方规则基线以 `DEV-OFFICIAL-STRATEGY-CONTRACT.md` 为准。
 日期：2026-08-03
 前置：`DEV-STRATEGY-REFACTOR.md`；当前运行态以 Obsidian `Note/Infra/pxed 挂机脚本运维手册.md` 的 Arena 章节为准。
 范围：仅 `arena-hero-agent`。只使用当前官方 Agent state；不使用浏览器、迷雾坐标、历史敌方位置或新守护进程。
