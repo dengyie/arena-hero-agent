@@ -14,7 +14,7 @@ from urllib.request import Request, ProxyHandler, build_opener
 
 from .journal import Journal
 from .model import snapshot_from_state
-from .policy import (MAX_ECONOMY_WORKERS, MAX_EXTERNAL_RECOVERY_WORKERS,
+from .policy import (MAX_ECONOMY_WORKERS, MAX_EXTERNAL_RECOVERY_POPULATION,
                      ExplorationMemory, economy_plan, step_position)
 
 LOG = logging.getLogger("arena_agent")
@@ -65,8 +65,8 @@ def population_control_metrics(snapshot: Any) -> dict[str, Any]:
     return {
         "worker_count": worker_count,
         "normal_worker_cap": MAX_ECONOMY_WORKERS,
-        "external_recovery_worker_ceiling": MAX_EXTERNAL_RECOVERY_WORKERS,
-        "external_recovery_ceiling_reached": worker_count >= MAX_EXTERNAL_RECOVERY_WORKERS,
+        "external_recovery_population_ceiling": MAX_EXTERNAL_RECOVERY_POPULATION,
+        "external_recovery_ceiling_reached": snapshot.population >= MAX_EXTERNAL_RECOVERY_POPULATION,
     }
 
 

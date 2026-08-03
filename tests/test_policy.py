@@ -8,7 +8,7 @@ from arena_agent.__main__ import (PermanentAuthError, allocator_metrics, populat
                                   record_received_source, record_session_baseline)
 from pathlib import Path
 from arena_agent.policy import (
-    ExplorationMemory, MAX_BAND_RADIUS, MAX_ECONOMY_WORKERS, MAX_EXTERNAL_RECOVERY_WORKERS, PATH_NODE_CAP,
+    ExplorationMemory, MAX_BAND_RADIUS, MAX_ECONOMY_WORKERS, MAX_EXTERNAL_RECOVERY_POPULATION, PATH_NODE_CAP,
     economy_plan, first_step, plan_path,
 )
 from arena_agent.journal import Journal
@@ -89,19 +89,19 @@ class AgentTests(unittest.TestCase):
             "unmatched_eligible": 1, "resource_starved": False, "total_cost": 900,
         })
 
-    def test_population_control_metrics_marks_external_recovery_ceiling(self):
+    def test_population_control_metrics_marks_external_recovery_population_ceiling(self):
         core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
         workers = [
             {"kind": "UNIT", "id": f"worker-{index}", "controlled": True,
              "position": [index + 1, 0], "unit_type": "WORKER", "cargo": 0}
-            for index in range(MAX_EXTERNAL_RECOVERY_WORKERS)
+            for index in range(MAX_EXTERNAL_RECOVERY_POPULATION)
         ]
         state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 0,
-            "population": MAX_EXTERNAL_RECOVERY_WORKERS, "objects": [core, *workers], "events": []})
+            "population": MAX_EXTERNAL_RECOVERY_POPULATION, "objects": [core, *workers], "events": []})
         self.assertEqual(population_control_metrics(state), {
-            "worker_count": MAX_EXTERNAL_RECOVERY_WORKERS,
+            "worker_count": MAX_EXTERNAL_RECOVERY_POPULATION,
             "normal_worker_cap": MAX_ECONOMY_WORKERS,
-            "external_recovery_worker_ceiling": MAX_EXTERNAL_RECOVERY_WORKERS,
+            "external_recovery_population_ceiling": MAX_EXTERNAL_RECOVERY_POPULATION,
             "external_recovery_ceiling_reached": True,
         })
 
@@ -836,23 +836,41 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(plan.core_action, {"type": "SPAWN", "unit_type": "WORKER"})
         self.assertEqual(plan.unit_actions["worker-0"], {"type": "MOVE", "direction": "UP"})
 
-    def test_external_recovery_ceiling_holds_without_spawn(self):
+    def test_external_recovery_population_ceiling_holds_without_spawn(self):
         mem = ExplorationMemory()
         core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
         workers = [
             {"kind": "UNIT", "id": f"worker-{index}", "controlled": True,
              "position": [0, 0] if index == 0 else [index, 0],
              "unit_type": "WORKER", "cargo": 1 if index == 0 else 0}
-            for index in range(MAX_EXTERNAL_RECOVERY_WORKERS)
+            for index in range(MAX_EXTERNAL_RECOVERY_POPULATION - 1)
         ]
         full = {"event_id": "full-at-ceiling", "event_type": "DEPOSIT_FAILED",
                 "reason_code": "CORE_RESOURCE_FULL", "actor_id": "worker-0", "position": [0, 0]}
-        state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 60,
-            "population": 13, "objects": [core, *workers], "events": [full]})
+        state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 95,
+            "population": MAX_EXTERNAL_RECOVERY_POPULATION, "objects": [core, *workers], "events": [full]})
         plan = economy_plan(state, mem)
         self.assertEqual(plan.policy_state, "CORE_FULL_EXTERNAL_CAP_HOLD")
         self.assertIsNone(plan.core_action)
         self.assertEqual(plan.unit_actions["worker-0"], {"type": "WAIT"})
+
+    def test_external_recovery_below_population_ceiling_can_spawn(self):
+        mem = ExplorationMemory()
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        workers = [
+            {"kind": "UNIT", "id": f"worker-{index}", "controlled": True,
+             "position": [0, 0] if index == 0 else [index, 0],
+             "unit_type": "WORKER", "cargo": 1 if index == 0 else 0}
+            for index in range(MAX_EXTERNAL_RECOVERY_POPULATION - 2)
+        ]
+        full = {"event_id": "full-below-ceiling", "event_type": "DEPOSIT_FAILED",
+                "reason_code": "CORE_RESOURCE_FULL", "actor_id": "worker-0", "position": [0, 0]}
+        state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 90,
+            "population": MAX_EXTERNAL_RECOVERY_POPULATION - 1,
+            "objects": [core, *workers], "events": [full]})
+        plan = economy_plan(state, mem)
+        self.assertEqual(plan.policy_state, "CORE_FULL_EXTERNAL_CAP_RECOVERY")
+        self.assertEqual(plan.core_action, {"type": "SPAWN", "unit_type": "WORKER"})
 
     def test_core_spawn_failure_applies_recovery_cooldown(self):
         mem = ExplorationMemory()
