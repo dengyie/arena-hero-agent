@@ -14,7 +14,7 @@ from urllib.request import Request, ProxyHandler, build_opener
 
 from .journal import Journal
 from .model import snapshot_from_state
-from .policy import ExplorationMemory, economy_plan
+from .policy import ExplorationMemory, economy_plan, step_position
 
 LOG = logging.getLogger("arena_agent")
 WS_URL = "wss://api.arenahero.io/api/v1/game/ws"
@@ -200,6 +200,19 @@ async def run(args: argparse.Namespace) -> int:
                             "deposit_latencies": list(memory.ledger.deposit_latencies)[-8:],
                             "injured_workers": sorted(memory.ledger.worker_damage_ticks),
                             "core_damage_recent": len(memory.ledger.core_damage_ticks),
+                        }
+                        state_summary["traffic"] = {
+                            "holds": dict(memory.traffic.holds),
+                            "ingress_queue": list(memory.traffic.ingress_queue),
+                            "reserved_destinations": len({
+                                step_position(unit.position, action["direction"])
+                                for unit in snapshot.workers
+                                for action in [plan.unit_actions.get(unit.id, {})]
+                                if action.get("type") == "MOVE"
+                            }),
+                            "dynamic_edges": len(memory.traffic.blocked_edges),
+                            "dynamic_cells": len(memory.traffic.blocked_cells),
+                            "repeated_failures": max(memory.traffic.repeated_failures.values(), default=0),
                         }
                         state_summary["last_event_types"] = plan.last_event_types
                         state_summary["stale_tick"] = bool(result.get("stale_tick"))

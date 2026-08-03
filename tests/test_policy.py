@@ -23,6 +23,38 @@ class AgentTests(unittest.TestCase):
         }
         data.update(kw)
         return snapshot_from_state(1, data)
+    def test_dynamic_move_failure_avoids_same_edge_next_tick(self):
+        mem = ExplorationMemory()
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        worker = {"kind": "UNIT", "id": "worker", "controlled": True,
+                  "position": [0, 0], "unit_type": "WORKER", "cargo": 0}
+        resource = {"kind": "RESOURCE", "positions": [[2, 0]]}
+        first = snapshot_from_state(1, {"status": "ACTIVE", "resources": 5, "population": 1,
+                                        "objects": [core, worker, resource], "events": []})
+        p = economy_plan(first, mem)
+        self.assertEqual(p.unit_actions["worker"], {"type": "MOVE", "direction": "RIGHT"})
+        failed = {"event_id": "blocked-right", "event_type": "UNIT_MOVE_FAILED",
+                  "reason_code": "MOVE_DESTINATION_OCCUPIED", "actor_id": "worker", "position": [0, 0]}
+        second = snapshot_from_state(2, {"status": "ACTIVE", "resources": 5, "population": 1,
+                                         "objects": [core, worker, resource], "events": [failed]})
+        p = economy_plan(second, mem)
+        self.assertNotEqual(p.unit_actions["worker"], {"type": "MOVE", "direction": "RIGHT"})
+        self.assertIn(p.unit_actions["worker"]["type"], {"MOVE", "WAIT"})
+
+    def test_traffic_reserves_shared_destination(self):
+        s = snapshot_from_state(1, {"status": "ACTIVE", "resources": 5, "population": 2,
+            "objects": [
+                {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]},
+                {"kind": "UNIT", "id": "worker-a", "controlled": True,
+                 "position": [0, 1], "unit_type": "WORKER", "cargo": 0},
+                {"kind": "UNIT", "id": "worker-b", "controlled": True,
+                 "position": [2, 1], "unit_type": "WORKER", "cargo": 0},
+                {"kind": "RESOURCE", "positions": [[1, 1]]},
+            ], "events": []})
+        p = economy_plan(s, ExplorationMemory())
+        moves = [action for action in p.unit_actions.values() if action == {"type": "MOVE", "direction": "RIGHT"}]
+        self.assertLessEqual(len(moves), 1)
+
     def test_snapshot_parses_current_unit_hp(self):
         s = snapshot_from_state(1, {"status": "ACTIVE", "resources": 5, "population": 1,
             "objects": [
