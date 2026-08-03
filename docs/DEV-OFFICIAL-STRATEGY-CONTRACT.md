@@ -192,7 +192,21 @@ runtime: RSS, journal record size, path nodes/length
 
 禁止：不明资源变化时扩 Worker、读取迷雾、动态障碍永久化、随机逃逸、与战斗/Beacon/Core move 混批。
 
-## 10. 发布与回滚
+## 8.1 官方经济归因与 Core 防守批次（已开发，待线上事件验证）
+
+本批将官方 Core/state 事实接入模型和策略：
+
+```text
+Snapshot: core hp/shield/state + upkeep_next_tick
+Event ledger: UPKEEP_PAID / CORE_RESOURCE_OVERFLOW_DESTROYED /
+              CORE_HEAL_* / CORE_REPAIR_*
+Core action: NORMAL Core、resources >= 10、无 Core full/recent Core damage 时
+             hp<5 → HEAL；否则 shield<5 → REPAIR_SHIELD
+```
+
+Core 防守绝不覆盖 Core full recovery，也不改变 Worker/traffic/ingress/cap=8。当前线上 Core `NORMAL/hp=5/shield=5/upkeep=0`，因此预期无 Core action；只有出现权威缺口时才会发官方合法 action，并以 `CORE_HEAL_SUCCEEDED` / `CORE_REPAIR_SUCCEEDED` 验收。
+
+## 9. 发布与回滚
 
 ```text
 local unit tests + compileall + shell syntax + diff check

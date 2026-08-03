@@ -212,6 +212,10 @@ async def run(args: argparse.Namespace) -> int:
                             "deposit_latencies": list(memory.ledger.deposit_latencies)[-8:],
                             "injured_workers": sorted(memory.ledger.worker_damage_ticks),
                             "core_damage_recent": len(memory.ledger.core_damage_ticks),
+                            "upkeep_last": memory.ledger.upkeep_events[-1] if memory.ledger.upkeep_events else None,
+                            "resource_overflow_destroyed": memory.ledger.resource_overflow_amount,
+                            "core_defense_events": list(memory.ledger.core_defense_events)[-8:],
+                            "core_action": (plan.core_action or {}).get("type"),
                         }
                         state_summary["traffic"] = {
                             "holds": dict(memory.traffic.holds),

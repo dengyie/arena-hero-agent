@@ -27,6 +27,9 @@ CAPACITY_RECOVERY_COOLDOWN = 4
 TRAFFIC_EDGE_TTL = 2
 TRAFFIC_CORE_TTL = 4
 CORE_INGRESS_RADIUS = 3
+CORE_DEFENSE_RESERVE = 10
+MAX_CORE_HP = 5
+MAX_CORE_SHIELD = 5
 MAX_DYNAMIC_EDGES = 512
 MAX_DYNAMIC_CELLS = 256
 
@@ -102,6 +105,9 @@ class EventLedger:
     worker_damage_ticks: dict[str, int] = field(default_factory=dict)
     pending_harvests: dict[str, int] = field(default_factory=dict)
     deposit_latencies: deque[int] = field(default_factory=deque)
+    upkeep_events: deque[dict[str, int]] = field(default_factory=deque)
+    resource_overflow_amount: int = 0
+    core_defense_events: deque[str] = field(default_factory=deque)
 
     def accept(self, event: dict[str, Any]) -> bool:
         event_id = str(event.get("event_id", ""))
@@ -277,6 +283,17 @@ class ExplorationMemory:
                     self.traffic.blocked_edges.pop((actor_id, memory_edge[0], memory_edge[1]), None)
             elif kind == "UNIT_DAMAGED" and event.get("reason_code") == "ATTACK":
                 self.ledger.record_worker_damage(str(event.get("target_id", "")), state.tick)
+            elif kind == "UPKEEP_PAID":
+                values = event.get("values", {})
+                self.ledger.upkeep_events.append({key: int(values.get(key, 0)) for key in ("due", "paid", "deficit")})
+                while len(self.ledger.upkeep_events) > MAX_EVENT_IDS:
+                    self.ledger.upkeep_events.popleft()
+            elif kind == "CORE_RESOURCE_OVERFLOW_DESTROYED":
+                self.ledger.resource_overflow_amount += int(event.get("values", {}).get("amount", 0))
+            elif kind in {"CORE_HEAL_SUCCEEDED", "CORE_REPAIR_SUCCEEDED", "CORE_HEAL_FAILED", "CORE_REPAIR_FAILED"}:
+                self.ledger.core_defense_events.append(kind)
+                while len(self.ledger.core_defense_events) > MAX_EVENT_IDS:
+                    self.ledger.core_defense_events.popleft()
             elif kind == "CORE_DAMAGED":
                 self.ledger.record_damage(state.tick)
             elif kind == "CORE_DESTROYED":
@@ -473,6 +490,18 @@ def choose_traffic_move(worker: Unit, target: Position, state: Snapshot, obstacl
     return PathResult(direction, "FOUND", length + 1, path.explored_nodes, path.target)
 
 
+def choose_core_defense_action(state: Snapshot, memory: ExplorationMemory) -> dict[str, Any] | None:
+    """Use the sole Core action conservatively from current authoritative state."""
+    if (memory.core_full or memory.ledger.core_damage_ticks or state.core_state not in {None, "NORMAL"}
+            or state.resources < CORE_DEFENSE_RESERVE):
+        return None
+    if state.core_hp is not None and state.core_hp < MAX_CORE_HP:
+        return {"type": "HEAL"}
+    if state.core_shield is not None and state.core_shield < MAX_CORE_SHIELD:
+        return {"type": "REPAIR_SHIELD"}
+    return None
+
+
 def _plan(actions: dict[str, dict[str, Any]], memory: ExplorationMemory, *, policy_state: str,
           target: Position | None = None, waypoint: Position | None = None,
           path: PathResult | None = None, core_action: dict[str, Any] | None = None) -> Plan:
@@ -612,6 +641,8 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
         elif primary_target is None:
             primary_state, primary_target, primary_path = "EXPLORE", target, path
 
+    if core_action is None:
+        core_action = choose_core_defense_action(state, memory)
     if core_action is None and memory.can_spawn_worker(state):
         core_action = {"type": "SPAWN", "unit_type": "WORKER"}
     return _plan(actions, memory, policy_state=primary_state, target=primary_target,

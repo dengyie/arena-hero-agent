@@ -33,6 +33,10 @@ class Snapshot:
     resource_capacity: int
     core_id: str | None
     core_position: Position | None
+    core_hp: int | None = None
+    core_shield: int | None = None
+    core_state: str | None = None
+    upkeep_next_tick: int | None = None
     units: tuple[Unit, ...] = ()
     visible_enemies: tuple[VisibleEnemy, ...] = ()
     resource_cells: frozenset[Position] = frozenset()
@@ -61,6 +65,9 @@ def position(value: Any) -> Position:
 def snapshot_from_state(tick: int, data: dict[str, Any]) -> Snapshot:
     core_id = None
     core_position = None
+    core_hp: int | None = None
+    core_shield: int | None = None
+    core_state: str | None = None
     units: list[Unit] = []
     enemies: list[VisibleEnemy] = []
     resources: set[Position] = set()
@@ -72,6 +79,9 @@ def snapshot_from_state(tick: int, data: dict[str, Any]) -> Snapshot:
             if controlled:
                 core_id = str(obj["id"])
                 core_position = position(obj["position"])
+                core_hp = int(obj["hp"]) if obj.get("hp") is not None else None
+                core_shield = int(obj["shield"]) if obj.get("shield") is not None else None
+                core_state = str(obj.get("state")) if obj.get("state") is not None else None
             elif "id" in obj and "position" in obj:
                 enemies.append(VisibleEnemy(str(obj["id"]), position(obj["position"]), "CORE"))
         elif kind == "UNIT":
@@ -92,6 +102,8 @@ def snapshot_from_state(tick: int, data: dict[str, Any]) -> Snapshot:
         resources=int(data.get("resources", 0)),
         resource_capacity=max(10, population * 5),
         core_id=core_id, core_position=core_position,
+        core_hp=core_hp, core_shield=core_shield, core_state=core_state,
+        upkeep_next_tick=int(data["upkeep_next_tick"]) if data.get("upkeep_next_tick") is not None else None,
         units=tuple(units), visible_enemies=tuple(enemies),
         resource_cells=frozenset(resources), obstacle_cells=frozenset(obstacles),
         events=tuple(data.get("events", [])),

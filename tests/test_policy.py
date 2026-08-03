@@ -23,6 +23,58 @@ class AgentTests(unittest.TestCase):
         }
         data.update(kw)
         return snapshot_from_state(1, data)
+    def test_official_upkeep_and_overflow_events_are_idempotently_accounted(self):
+        mem = ExplorationMemory()
+        core = {"kind": "CORE", "id": "core", "controlled": True,
+                "position": [0, 0], "hp": 5, "shield": 5, "state": "NORMAL"}
+        events = [
+            {"event_id": "upkeep", "event_type": "UPKEEP_PAID", "actor_id": "core",
+             "position": [0, 0], "values": {"due": 4, "paid": 3, "deficit": 1}},
+            {"event_id": "overflow", "event_type": "CORE_RESOURCE_OVERFLOW_DESTROYED", "actor_id": "core",
+             "position": [0, 0], "values": {"amount": 6, "capacity": 10}},
+        ]
+        s = snapshot_from_state(1, {"status": "ACTIVE", "resources": 4, "population": 1,
+                                     "objects": [core], "events": events})
+        economy_plan(s, mem)
+        economy_plan(s, mem)
+        self.assertEqual(list(mem.ledger.upkeep_events), [{"due": 4, "paid": 3, "deficit": 1}])
+        self.assertEqual(mem.ledger.resource_overflow_amount, 6)
+
+    def test_snapshot_parses_current_core_economy_fields(self):
+        s = snapshot_from_state(1, {"status": "ACTIVE", "resources": 12, "population": 1,
+            "upkeep_next_tick": 0,
+            "objects": [{"kind": "CORE", "id": "core", "controlled": True,
+                         "position": [0, 0], "hp": 4, "shield": 3, "state": "NORMAL"}],
+            "events": []})
+        self.assertEqual((s.core_hp, s.core_shield, s.core_state, s.upkeep_next_tick), (4, 3, "NORMAL", 0))
+
+    def test_core_defense_heals_then_repairs_shield(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0],
+                "hp": 4, "shield": 3, "state": "NORMAL"}
+        worker = {"kind": "UNIT", "id": "worker", "controlled": True,
+                  "position": [4, 0], "unit_type": "WORKER", "cargo": 0}
+        p = economy_plan(snapshot_from_state(1, {"status": "ACTIVE", "resources": 12, "population": 1,
+            "objects": [core, worker], "events": []}), ExplorationMemory())
+        self.assertEqual(p.core_action, {"type": "HEAL"})
+        core["hp"] = 5
+        p = economy_plan(snapshot_from_state(2, {"status": "ACTIVE", "resources": 12, "population": 1,
+            "objects": [core, worker], "events": []}), ExplorationMemory())
+        self.assertEqual(p.core_action, {"type": "REPAIR_SHIELD"})
+
+    def test_core_defense_yields_to_full_core_or_recent_damage(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0],
+                "hp": 4, "shield": 3, "state": "NORMAL"}
+        worker = {"kind": "UNIT", "id": "worker", "controlled": True,
+                  "position": [0, 0], "unit_type": "WORKER", "cargo": 1}
+        full = {"event_id": "full", "event_type": "DEPOSIT_FAILED", "reason_code": "CORE_RESOURCE_FULL", "position": [0, 0]}
+        p = economy_plan(snapshot_from_state(1, {"status": "ACTIVE", "resources": 10, "population": 1,
+            "objects": [core, worker], "events": [full]}), ExplorationMemory())
+        self.assertEqual(p.core_action, {"type": "SPAWN", "unit_type": "WORKER"})
+        damaged = {"event_id": "damage", "event_type": "CORE_DAMAGED", "reason_code": "ATTACK", "target_id": "core", "position": [0, 0]}
+        p = economy_plan(snapshot_from_state(2, {"status": "ACTIVE", "resources": 12, "population": 1,
+            "objects": [core], "events": [damaged]}), ExplorationMemory())
+        self.assertIsNone(p.core_action)
+
     def test_core_ingress_holds_only_nearby_nonleader_carriers(self):
         core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
         near = {"kind": "UNIT", "id": "near", "controlled": True,
