@@ -58,6 +58,21 @@ class AgentTests(unittest.TestCase):
             lambda worker, resource: PathResult(None, "NO_PATH", 0, 10, None))
         self.assertEqual(result, ())
 
+    def test_allocator_metrics_reset_when_core_full_bypasses_allocation(self):
+        mem = ExplorationMemory()
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        worker = {"kind": "UNIT", "id": "worker", "controlled": True,
+                  "position": [1, 0], "unit_type": "WORKER", "cargo": 0}
+        resource = {"kind": "RESOURCE", "positions": [[2, 0]]}
+        economy_plan(snapshot_from_state(1, {"status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [core, worker, resource], "events": []}), mem)
+        self.assertEqual(mem.allocation_count, 1)
+        worker["cargo"] = 1
+        full = {"event_id": "full", "event_type": "DEPOSIT_FAILED", "reason_code": "CORE_RESOURCE_FULL", "position": [0, 0]}
+        economy_plan(snapshot_from_state(2, {"status": "ACTIVE", "resources": 10, "population": 1,
+            "objects": [core, worker], "events": [full]}), mem)
+        self.assertEqual((mem.allocation_count, mem.allocation_total_cost), (0, 0))
+
     def test_resource_allocator_caps_assignment_edges(self):
         workers = tuple(
             snapshot_from_state(1, {"status": "ACTIVE", "resources": 0, "population": 8,

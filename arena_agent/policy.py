@@ -466,6 +466,8 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
     memory = memory or ExplorationMemory()
     memory.observe(state)
     memory.apply_events(state)
+    memory.allocation_count = 0
+    memory.allocation_total_cost = 0
     if state.status != "ACTIVE":
         return _plan({}, memory, policy_state="PAUSE")
 
