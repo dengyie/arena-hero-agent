@@ -24,6 +24,25 @@ DIRECT_HTTP = build_opener(ProxyHandler({}))
 class ProtocolError(RuntimeError): pass
 class PermanentAuthError(RuntimeError): pass
 
+def record_received_source(audit: dict[str, Any], received: Any) -> dict[str, Any]:
+    """Classify a stored source plan for metrics without affecting decisions."""
+    payload = received if isinstance(received, dict) else {}
+    source = str(payload.get("source", "UNKNOWN"))
+    stored_plan = payload.get("plan") if isinstance(payload.get("plan"), dict) else {}
+    core_action = stored_plan.get("core_action") if isinstance(stored_plan.get("core_action"), dict) else None
+    audit["last_received"] = {
+        "source": source,
+        "tick": payload.get("tick"),
+        "core_action": core_action.get("type") if core_action else None,
+    }
+    if source == "MANUAL":
+        audit["manual_interventions"] += 1
+        audit["window_contaminated"] = True
+        if core_action:
+            audit["external_core_actions"] += 1
+    return payload
+
+
 async def post_plan(token: str, tick: int, plan: dict[str, Any], dry_run: bool, cookie: str = "", csrf: str = "") -> dict[str, Any]:
     body = {"tick": tick, **plan}
     if dry_run:
@@ -103,6 +122,8 @@ async def run(args: argparse.Namespace) -> int:
         raise SystemExit("ARENA_HERO_TOKEN or ARENA_HERO_COOKIE is required for --live")
     journal = Journal(args.journal)
     memory = ExplorationMemory()
+    source_audit = {"manual_interventions": 0, "external_core_actions": 0,
+                    "window_contaminated": False, "last_received": None}
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     if cookie:
         headers["Cookie"] = cookie
@@ -187,6 +208,12 @@ async def run(args: argparse.Namespace) -> int:
                             for obj in raw_state.get("objects", [])
                             if obj.get("kind") == "CORE" and obj.get("controlled")
                         ]
+                        state_summary["source_audit"] = {
+                            "manual_interventions": source_audit["manual_interventions"],
+                            "external_core_actions": source_audit["external_core_actions"],
+                            "window_contaminated": source_audit["window_contaminated"],
+                            "last_received": source_audit["last_received"],
+                        }
                         state_summary["policy_state"] = plan.policy_state
                         state_summary["active_target"] = plan.active_target
                         state_summary["waypoint"] = plan.waypoint
@@ -243,7 +270,8 @@ async def run(args: argparse.Namespace) -> int:
                         if args.max_ticks > 0 and ticks >= args.max_ticks:
                             return 0
                     elif kind == "received":
-                        journal.write("received", session=session_id, data=msg.get("data"))
+                        received = record_received_source(source_audit, msg.get("data"))
+                        journal.write("received", session=session_id, data=received)
                     else:
                         journal.write("unknown_message", session=session_id, data=msg)
                 if saw_message:

@@ -4,7 +4,7 @@ from unittest.mock import mock_open, patch
 from arena_agent.allocator import allocate_visible_resources
 from arena_agent.model import snapshot_from_state
 from arena_agent.path import PathResult
-from arena_agent.__main__ import PermanentAuthError, post_plan
+from arena_agent.__main__ import PermanentAuthError, post_plan, record_received_source
 from pathlib import Path
 from arena_agent.policy import (
     ExplorationMemory, MAX_BAND_RADIUS, MAX_ECONOMY_WORKERS, PATH_NODE_CAP,
@@ -25,6 +25,19 @@ class AgentTests(unittest.TestCase):
         }
         data.update(kw)
         return snapshot_from_state(1, data)
+    def test_received_source_audit_marks_manual_core_action_only(self):
+        audit = {"manual_interventions": 0, "external_core_actions": 0,
+                 "window_contaminated": False, "last_received": None}
+        record_received_source(audit, {"source": "AGENT", "tick": 1,
+                                       "plan": {"unit_actions": {}}})
+        self.assertEqual((audit["manual_interventions"], audit["external_core_actions"]), (0, 0))
+        self.assertFalse(audit["window_contaminated"])
+        record_received_source(audit, {"source": "MANUAL", "tick": 2,
+                                       "plan": {"core_action": {"type": "SPAWN", "unit_type": "WORKER"}}})
+        self.assertEqual((audit["manual_interventions"], audit["external_core_actions"]), (1, 1))
+        self.assertTrue(audit["window_contaminated"])
+        self.assertEqual(audit["last_received"], {"source": "MANUAL", "tick": 2, "core_action": "SPAWN"})
+
     def test_global_resource_allocator_beats_worker_greedy_order(self):
         s = snapshot_from_state(1, {"status": "ACTIVE", "resources": 0, "population": 2,
             "objects": [
