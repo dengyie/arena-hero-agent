@@ -302,6 +302,17 @@ resource_starved / total_cost
 
 新 session 实证 `visible_resources 4→0→1` 时 `matched 4→0→1`，仅资源为 0 时 `resource_starved=true`。这一批不改 Plan 或调度；后续只在 `visible_resources>0 && unmatched_eligible` 持续偏高时审查 path/role 参数。出现的 `MOVE_CONTESTED` 与 `MOVE_DESTINATION_OCCUPIED` 均在下一 Tick 改道成功，尚无 traffic P0。
 
+## 9.4 Frontier 与动态 traffic 失败分离（已上线）
+
+无污染窗口曾显示 `frontier.failed` 在 50 Tick 内 `7→67`，但 path 均为 `FOUND`；根因是任意 `UNIT_MOVE_FAILED` 把 active frontier target 误记为不可达。`dabe719` 现规定：
+
+```text
+UNIT_MOVE_FAILED → TTL traffic backoff / alternate first step
+path NO_PATH or NODE_CAP → frontier failed target
+```
+
+上线新 session 的 30 Tick 已出现两次 `MOVE_CONTESTED`，但 `frontier.failed` 保持 `0→0`；265 次成功移动、2 次交付、1 次采集继续发生。资源为零的 Tick 占 26/30，四个可见资源 Tick 均有匹配；当前瓶颈是合法视野供给，不是 frontier/path failure。
+
 ## 10. Explicit Non-goals and Review Gates
 
 - No new long-running daemon, wrapper script or SDK migration.
