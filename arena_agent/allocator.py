@@ -83,6 +83,11 @@ def allocate_visible_resources(
             choices.append((cost, ri, path))
         for cost, ri, path in sorted(choices, key=lambda item: (item[0], ordered_resources[item[1]]))[:MAX_CANDIDATES_PER_WORKER]:
             edges[wi, ri] = path, cost
+    if len(edges) > MAX_ASSIGNMENT_EDGES:
+        selected = sorted(
+            edges.items(), key=lambda item: (item[1][1], item[0][0], item[0][1]),
+        )[:MAX_ASSIGNMENT_EDGES]
+        edges = dict(selected)
     if not edges:
         return ()
     resources_used = sorted({ri for _, ri in edges})

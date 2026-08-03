@@ -58,6 +58,20 @@ class AgentTests(unittest.TestCase):
             lambda worker, resource: PathResult(None, "NO_PATH", 0, 10, None))
         self.assertEqual(result, ())
 
+    def test_resource_allocator_caps_assignment_edges(self):
+        workers = tuple(
+            snapshot_from_state(1, {"status": "ACTIVE", "resources": 0, "population": 8,
+                "objects": [{"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}] + [
+                    {"kind": "UNIT", "id": f"worker-{i}", "controlled": True,
+                     "position": [i, 0], "unit_type": "WORKER", "cargo": 0}
+                    for i in range(8)
+                ], "events": []}).workers
+        )
+        resources = tuple((i, j) for i in range(16) for j in range(2))
+        result = allocate_visible_resources(workers, resources,
+            lambda worker, resource: PathResult("RIGHT", "FOUND", 1, 1, resource))
+        self.assertLessEqual(len(result), 8)
+
     def test_official_upkeep_and_overflow_events_are_idempotently_accounted(self):
         mem = ExplorationMemory()
         core = {"kind": "CORE", "id": "core", "controlled": True,
