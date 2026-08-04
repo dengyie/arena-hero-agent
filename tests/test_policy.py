@@ -982,7 +982,7 @@ class AgentTests(unittest.TestCase):
         plan = economy_plan(state, ExplorationMemory())
         self.assertEqual(plan.worker_intents["empty"], ((0, 0), "RETURN_SAFE"))
         self.assertEqual(plan.worker_intents["carrying"], ((0, 0), "RETURN_CORE"))
-        self.assertEqual(plan.unit_actions["empty"]["type"], "MOVE")
+        self.assertEqual(plan.unit_actions["empty"], {"type": "WAIT"})
         self.assertEqual(plan.unit_actions["carrying"]["type"], "MOVE")
 
     def test_phase_evaluation_attributes_fallback_once_and_excludes_contamination(self):
@@ -1035,6 +1035,28 @@ class AgentTests(unittest.TestCase):
             "objects": [core, {**worker, "position": [0, 0]}], "events": []})
         third = economy_plan(arrived, mem)
         self.assertNotEqual(third.worker_intents["worker"][1], "RETURN_SAFE")
+
+    def test_safe_retreat_uses_core_ingress_queue_without_last_step_oscillation(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        first = {"kind": "UNIT", "id": "first", "controlled": True,
+                 "position": [1, 0], "unit_type": "WORKER", "cargo": 0}
+        second = {"kind": "UNIT", "id": "second", "controlled": True,
+                  "position": [1, 2], "unit_type": "WORKER", "cargo": 0}
+        enemy = {"kind": "UNIT", "id": "enemy", "controlled": False,
+                 "position": [2, 1], "unit_type": "WORKER"}
+        mem = ExplorationMemory()
+        state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 0, "population": 2,
+            "objects": [core, first, second, enemy], "events": []})
+        plan = economy_plan(state, mem)
+        self.assertEqual(plan.worker_intents["first"], ((0, 0), "RETURN_SAFE"))
+        self.assertEqual(plan.worker_intents["second"], ((0, 0), "RETURN_SAFE"))
+        self.assertEqual(plan.unit_actions["first"], {"type": "MOVE", "direction": "LEFT"})
+        self.assertEqual(plan.unit_actions["second"], {"type": "WAIT"})
+        after = snapshot_from_state(2, {"status": "ACTIVE", "resources": 0, "population": 2,
+            "objects": [core, {**first, "position": [0, 0]}, second], "events": []})
+        next_plan = economy_plan(after, mem)
+        self.assertNotIn("first", mem.safe_retreat_workers)
+        self.assertEqual(next_plan.unit_actions["second"]["type"], "MOVE")
 
     def test_defense_restricts_vanguard_and_ranger_to_core_local_economy_protection(self):
         core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}

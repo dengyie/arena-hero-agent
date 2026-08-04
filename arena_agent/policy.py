@@ -845,13 +845,18 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
             if worker.id in memory.frontier_completion_transitions:
                 memory.frontier_arrival_wait_ticks += 1
 
-    # Core ingress queue for ordinary returns; only the nearest/UUID-stable carrier approaches Core.
-    carriers = sorted((w for w, target, kind in desired.values() if kind == "RETURN_CORE"),
-                      key=lambda w: (abs(w.position[0] - state.core_position[0]) + abs(w.position[1] - state.core_position[1]), w.id)) if state.core_position else []
-    memory.traffic.ingress_queue = tuple(w.id for w in carriers)
+    # Core ingress queue serializes both cargo delivery and safe retreats near the Core.
+    carriers = sorted((
+        (w, kind) for w, target, kind in desired.values() if kind in {"RETURN_CORE", "RETURN_SAFE"}
+    ), key=lambda item: (
+        0 if item[1] == "RETURN_CORE" else 1,
+        abs(item[0].position[0] - state.core_position[0]) + abs(item[0].position[1] - state.core_position[1]),
+        item[0].id,
+    )) if state.core_position else []
+    memory.traffic.ingress_queue = tuple(worker.id for worker, _ in carriers)
 
     for worker, target, kind in sorted(desired.values(), key=lambda item: traffic_priority(item[0], state.core_position)):
-        if (kind == "RETURN_CORE" and memory.traffic.ingress_queue
+        if (kind in {"RETURN_CORE", "RETURN_SAFE"} and memory.traffic.ingress_queue
                 and worker.id != memory.traffic.ingress_queue[0]
                 and state.core_position is not None
                 and abs(worker.position[0] - state.core_position[0]) + abs(worker.position[1] - state.core_position[1]) <= CORE_INGRESS_RADIUS):

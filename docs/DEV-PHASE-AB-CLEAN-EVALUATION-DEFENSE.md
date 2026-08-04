@@ -1,6 +1,6 @@
 # DEV：Arena Phase A/B — Clean Evaluation 与经济保护防守层
 
-- 状态：**已上线；sticky retreat 已真实验收；clean evaluation/Phase C 受外部 over-cap baseline阻塞**
+- 状态：**已修复 safe-retreat ingress liveness，待 CI/pxed 暂存和线上复验**
 - 日期：2026-08-04
 - 前置：`DEV-OFFICIAL-STRATEGY-CONTRACT.md`、`DEV-FRONTIER-LIVENESS-RECOVERY.md`
 - 适用仓库：`/Users/mango/project/arena-hero-agent`
@@ -340,6 +340,8 @@ empty + enemy_threatens(worker):
 `RETURN_SAFE` 是 plan intent 标签，不是新的官方 action。它只在当前 threat 下将空载 Worker 移至 Core；不追敌，不阻断其他不受威胁 Worker 的资源任务。
 
 上线后真实日志发现瞬时 visibility flap 会导致 `RETURN_SAFE ↔ EXPLORE` 每 Tick切换、Worker 在两格间往返。修复为 sticky retreat transaction：首次当前 threat 将空载健康 Worker ID 写入仅己方 `safe_retreat_workers`；在到达 Core、开始携货或进入受伤治疗优先级前，即使下一 Tick威胁暂时不可见也持续 `RETURN_SAFE`。journal 必须同时区分当前 `threatened_workers` 与仍在返程的 `safe_retreat_workers`；后者不是持久敌方事实。上线真实验收：威胁消失后6名撤离Worker仍持续向Core收敛，样本为 `254… 41→27`、`a203… 83→67`、`10ced… 22→11`；没有旧版一格探索/一格撤离的无限往返。少量单步非进展仍来自正常有界路径/traffic选择。
+
+随后真实日志又发现多个 safe retreat Worker 到 Core 邻域时互相争用，出现距离 `1↔2` 的最后两格回摆。修复为把 `RETURN_SAFE` 纳入既有 Core ingress queue：近区仅队首可接近 Core，其他撤离Worker显式 `CORE_INGRESS_HOLD`；`RETURN_CORE`（携货交付）永远排在 `RETURN_SAFE` 之前。队首到Core释放 retreat后，下一名才推进。
 
 ### 6.3 Vanguard 防守规则
 
