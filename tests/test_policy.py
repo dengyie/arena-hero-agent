@@ -5,7 +5,8 @@ from arena_agent.allocator import allocate_visible_resources
 from arena_agent.model import Unit, snapshot_from_state
 from arena_agent.path import (FRONTIER_PATH_NODE_CAP, MAX_FRONTIER_PATH_EVALUATIONS,
                               PathResult, plan_frontier_path)
-from arena_agent.__main__ import (PermanentAuthError, allocator_metrics, population_control_metrics, post_plan,
+from arena_agent.__main__ import (PermanentAuthError, allocator_metrics, operator_attention_metrics,
+                                  population_control_metrics, post_plan,
                                   record_received_source, record_session_baseline, stale_tick_reconnect_required)
 from pathlib import Path
 from arena_agent.policy import (
@@ -131,6 +132,23 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(allocator_metrics(visible, 2, 900), {
             "eligible": 3, "visible_resources": 3, "matched": 2,
             "unmatched_eligible": 1, "resource_starved": False, "total_cost": 900,
+        })
+
+    def test_operator_attention_marks_population_ceiling_hold_only(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        workers = [
+            {"kind": "UNIT", "id": f"worker-{index}", "controlled": True,
+             "position": [index, 0], "unit_type": "WORKER", "cargo": index % 2}
+            for index in range(4)
+        ]
+        state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 0,
+            "population": 19, "objects": [core, *workers], "events": []})
+        self.assertEqual(operator_attention_metrics(state, "RETURN_CORE"), {
+            "required": False, "reason": None, "blocked_cargo_workers": 2,
+        })
+        self.assertEqual(operator_attention_metrics(state, "CORE_FULL_EXTERNAL_CAP_HOLD"), {
+            "required": True, "reason": "external_recovery_population_ceiling",
+            "blocked_cargo_workers": 2,
         })
 
     def test_population_control_metrics_marks_external_recovery_population_ceiling(self):

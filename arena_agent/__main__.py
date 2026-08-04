@@ -77,6 +77,15 @@ def population_control_metrics(snapshot: Any) -> dict[str, Any]:
     }
 
 
+def operator_attention_metrics(snapshot: Any, policy_state: str) -> dict[str, Any]:
+    required = policy_state == "CORE_FULL_EXTERNAL_CAP_HOLD"
+    return {
+        "required": required,
+        "reason": "external_recovery_population_ceiling" if required else None,
+        "blocked_cargo_workers": sum(1 for worker in snapshot.workers if worker.cargo > 0),
+    }
+
+
 def allocator_metrics(snapshot, matched: int, total_cost: int) -> dict[str, Any]:
     eligible = sum(1 for worker in snapshot.workers
                    if worker.cargo <= 0 and (worker.hp is None or worker.hp > 1))
@@ -289,6 +298,7 @@ async def run(args: argparse.Namespace) -> int:
                         state_summary["metric_window_eligible"] = (
                             not source_audit["window_contaminated"] and not result.get("stale_tick")
                         )
+                        state_summary["operator_attention"] = operator_attention_metrics(snapshot, plan.policy_state)
                         state_summary["policy_state"] = plan.policy_state
                         state_summary["active_target"] = plan.active_target
                         state_summary["waypoint"] = plan.waypoint
