@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .allocator import allocate_visible_resources
+from .combat import ranger_actions
 from .model import Position, Snapshot, Unit
 from .path import (DIRECTIONS, FRONTIER_PATH_NODE_CAP, MAX_FRONTIER_PATH_EVALUATIONS,
                    PathResult, first_step, plan_frontier_path, plan_path, step_position)
@@ -56,6 +57,8 @@ class EventLedger:
     upkeep_events: deque[dict[str, int]] = field(default_factory=deque)
     resource_overflow_amount: int = 0
     core_defense_events: deque[str] = field(default_factory=deque)
+    combat_events: deque[dict[str, Any]] = field(default_factory=deque)
+    combat_deaths: deque[dict[str, Any]] = field(default_factory=deque)
 
     def accept(self, event: dict[str, Any]) -> bool:
         event_id = str(event.get("event_id", ""))
@@ -237,8 +240,30 @@ class ExplorationMemory:
                 memory_edge = self.traffic.last_planned_edges.pop(actor_id, None)
                 if memory_edge is not None:
                     self.traffic.blocked_edges.pop((actor_id, memory_edge[0], memory_edge[1]), None)
+            elif kind in {"SWEEP_RESOLVED", "SHOT_HIT", "SHOT_MISSED", "DESTRUCTION_PARTICIPATION"}:
+                self.ledger.combat_events.append({
+                    "type": kind,
+                    "actor_id": actor_id,
+                    "target_id": str(event.get("target_id", "")) or None,
+                    "targets_hit": int(event.get("values", {}).get("targets_hit", 0)),
+                    "damage": int(event.get("values", {}).get("damage", 0)),
+                })
+                while len(self.ledger.combat_events) > MAX_EVENT_IDS:
+                    self.ledger.combat_events.popleft()
             elif kind == "UNIT_DAMAGED" and event.get("reason_code") == "ATTACK":
-                self.ledger.record_worker_damage(str(event.get("target_id", "")), state.tick)
+                target_id = str(event.get("target_id", ""))
+                self.ledger.record_worker_damage(target_id, state.tick)
+                hp = int(event.get("values", {}).get("hp", -1))
+                self.ledger.combat_events.append({
+                    "type": "UNIT_DAMAGED", "target_id": target_id,
+                    "damage": int(event.get("values", {}).get("damage", 0)), "hp": hp,
+                })
+                if hp == 0:
+                    self.ledger.combat_deaths.append({"target_id": target_id, "tick": state.tick})
+                while len(self.ledger.combat_events) > MAX_EVENT_IDS:
+                    self.ledger.combat_events.popleft()
+                while len(self.ledger.combat_deaths) > MAX_EVENT_IDS:
+                    self.ledger.combat_deaths.popleft()
             elif kind == "UPKEEP_PAID":
                 values = event.get("values", {})
                 self.ledger.upkeep_events.append({key: int(values.get(key, 0)) for key in ("due", "paid", "deficit")})
@@ -511,8 +536,9 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
     if state.status != "ACTIVE":
         return _plan({}, memory, policy_state="PAUSE")
 
-    actions = {unit.id: {"type": "WAIT"} for unit in state.units if unit.unit_type != "WORKER"}
+    actions = {unit.id: {"type": "WAIT"} for unit in state.units if unit.unit_type not in {"WORKER", "RANGER"}}
     actions.update(vanguard_guard_actions(state))
+    actions.update(ranger_actions(state))
     workers = sorted(state.workers, key=lambda unit: unit.id)
     if not workers:
         core_action = {"type": "SPAWN", "unit_type": "WORKER"} if memory.can_spawn_worker(state) else None

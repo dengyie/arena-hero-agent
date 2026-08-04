@@ -349,6 +349,20 @@ async def run(args: argparse.Namespace) -> int:
                             "dynamic_cells": len(memory.traffic.blocked_cells),
                             "repeated_failures": max(memory.traffic.repeated_failures.values(), default=0),
                         }
+                        state_summary["combat"] = {
+                            "visible_enemies": len(snapshot.visible_enemies),
+                            "visible_enemy_types": {
+                                kind: sum(1 for enemy in snapshot.visible_enemies if enemy.kind == kind)
+                                for kind in ("UNIT", "CORE")
+                            },
+                            "submitted": {
+                                unit_id: action.get("type")
+                                for unit_id, action in plan.unit_actions.items()
+                                if action.get("type") in {"SWEEP", "SHOOT"}
+                            },
+                            "recent_events": list(memory.ledger.combat_events)[-12:],
+                            "death_candidates": list(memory.ledger.combat_deaths)[-8:],
+                        }
                         state_summary["last_event_types"] = plan.last_event_types
                         state_summary["stale_tick"] = bool(result.get("stale_tick"))
                         state_summary["stale_tick_streak"] = stale_tick_streak

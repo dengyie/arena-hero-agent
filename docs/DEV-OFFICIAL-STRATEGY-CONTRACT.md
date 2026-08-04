@@ -155,6 +155,20 @@ permanent obstacles
 
 Beacon carrier/ground 可见字段在下一 state 缺失时必须清除旧值。Core migration 为四 Tick 事务，会影响 Unit HEAL、Core action、Beacon、路径和交付；未独立设计前保持禁用。
 
+## 7.1 保守战斗观测与当前可见 Ranger fire（已开发，待线上事件验收）
+
+参考 `VelvetEvening/Arena-Crazy-Attack@88083db7` 的可迁移部分是严格目标几何、事件确认和角色状态；不吸收其历史敌方追逐、远征编队、Beacon/攻击性生产或人口策略。
+
+```text
+Vanguard: 当前可见且正交相邻敌方 → SWEEP；否则 WAIT
+Ranger: 仅已存在 Ranger；当前可见 UNIT/CORE、水平/垂直/45度、距离1–3、
+        中间 obstacle 清晰 → SHOOT {target_id, expected_cell}；否则 WAIT
+```
+
+战斗事件账本仅接受下一完整 state 的 `SWEEP_RESOLVED`、`SHOT_HIT`、`SHOT_MISSED`、`UNIT_DAMAGED/ATTACK`、`DESTRUCTION_PARTICIPATION`；`hp=0` 是 death candidate，只有同一完整 state 的 target 缺失才能确认 kill。journal 不记录完整敌方 state，只写可见计数、submitted action、最近结果和 death candidates。
+
+禁止：Ranger/Vanguard 自动生产、追击、历史敌方坐标、Beacon、Core migration、在 `CORE_FULL_EXTERNAL_CAP_HOLD` 下以战斗绕开人口管理。首次上线只以真实 `SWEEP_RESOLVED` 或 `SHOT_HIT/SHOT_MISSED` 事件验证，不凭 202/received 宣称战斗成功。
+
 ## 8. 当前实现与验证状态
 
 | 能力 | 状态 | 事件级证据 |

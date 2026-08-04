@@ -2,6 +2,7 @@ import asyncio
 import unittest
 from unittest.mock import mock_open, patch
 from arena_agent.allocator import allocate_visible_resources
+from arena_agent.combat import intermediate_cells, ranger_line_distance, ranger_target
 from arena_agent.model import Unit, snapshot_from_state
 from arena_agent.path import (FRONTIER_PATH_NODE_CAP, MAX_FRONTIER_PATH_EVALUATIONS,
                               PathResult, plan_frontier_path)
@@ -819,6 +820,50 @@ class AgentTests(unittest.TestCase):
         p = economy_plan(fourth, mem)
         self.assertEqual(p.core_action, {"type": "SPAWN", "unit_type": "WORKER"})
         self.assertEqual(p.unit_actions["leader"], {"type": "MOVE", "direction": "UP"})
+
+    def test_ranger_shoots_only_current_visible_clear_legal_target(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        ranger = {"kind": "UNIT", "id": "ranger", "controlled": True,
+                  "position": [1, 1], "unit_type": "RANGER", "cargo": 0, "hp": 2}
+        enemy_unit = {"kind": "UNIT", "id": "enemy-unit", "controlled": False,
+                      "position": [4, 1], "unit_type": "WORKER"}
+        enemy_core = {"kind": "CORE", "id": "enemy-core", "controlled": False,
+                      "position": [1, 3]}
+        state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 0, "population": 2,
+            "objects": [core, ranger, enemy_unit, enemy_core], "events": []})
+        plan = economy_plan(state, ExplorationMemory())
+        self.assertEqual(plan.unit_actions["ranger"], {
+            "type": "SHOOT", "target_id": "enemy-unit", "expected_cell": [4, 1],
+        })
+        blocked = snapshot_from_state(2, {"status": "ACTIVE", "resources": 0, "population": 2,
+            "objects": [core, ranger, enemy_unit,
+                        {"kind": "OBSTACLE", "positions": [[2, 1]]}], "events": []})
+        self.assertEqual(economy_plan(blocked, ExplorationMemory()).unit_actions["ranger"], {"type": "WAIT"})
+        diagonal = snapshot_from_state(3, {"status": "ACTIVE", "resources": 0, "population": 2,
+            "objects": [core, ranger, {"kind": "UNIT", "id": "bad", "controlled": False,
+                                        "position": [3, 2], "unit_type": "WORKER"}], "events": []})
+        self.assertEqual(economy_plan(diagonal, ExplorationMemory()).unit_actions["ranger"], {"type": "WAIT"})
+
+    def test_combat_event_ledger_is_idempotent_and_tracks_damage_candidate(self):
+        mem = ExplorationMemory()
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        worker = {"kind": "UNIT", "id": "worker", "controlled": True,
+                  "position": [1, 0], "unit_type": "WORKER", "cargo": 0}
+        events = [
+            {"event_id": "sweep", "event_type": "SWEEP_RESOLVED", "actor_id": "guard",
+             "position": [2, 0], "values": {"targets_hit": 1}},
+            {"event_id": "hit", "event_type": "SHOT_HIT", "actor_id": "ranger",
+             "target_id": "enemy", "position": [3, 0], "values": {"damage": 1}},
+            {"event_id": "damage", "event_type": "UNIT_DAMAGED", "reason_code": "ATTACK",
+             "target_id": "enemy", "position": [3, 0], "values": {"damage": 1, "hp": 0}},
+        ]
+        state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [core, worker], "events": events})
+        mem.apply_events(state)
+        mem.apply_events(state)
+        self.assertEqual([event["type"] for event in mem.ledger.combat_events],
+                         ["SWEEP_RESOLVED", "SHOT_HIT", "UNIT_DAMAGED"])
+        self.assertEqual(list(mem.ledger.combat_deaths), [{"target_id": "enemy", "tick": 1}])
 
     def test_vanguard_sweeps_only_visible_adjacent_enemy(self):
         s = snapshot_from_state(1, {"status": "ACTIVE", "resources": 5, "population": 2,
