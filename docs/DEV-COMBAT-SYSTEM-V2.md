@@ -899,10 +899,19 @@ Combat V2 只有同时满足以下条件才能标记为完成：
   cells、Worker/Combat 共享 reservation、compact journal/episode attribution；
 - 本地证据：113 项 `unittest`、`compileall`、deploy shell syntax、`git diff --check`、
   1000 次纯函数确定性和 1000 synthetic Tick bounded-memory probe 通过；
-- 当前默认部署 mode 仍为 `current`，因此以上只属于 `code-tested`，不属于线上
-  `combat-event-verified` 或 `strategy-quality-verified`；
-- C8 待独立 D7 shadow 部署和至少 30 resolved Tick；C9-C12 均未开放；
-- C11 已拆为 `live-sweep` → `live-precision` → `live-cell` 累进 gate，禁止一次开放。
+- 当前默认部署 mode 为 `current`；独立 D7 已于 cutoff `2026-08-05T07:51:47+08:00`
+  运行 `--combat-mode shadow`，Arena Supervisor `RUNNING`，PID `48599`，RSS 末次约
+  `21.0 MB`；
+- C8 `shadow-verified`：同一 session `c9187bb3ace1` 至少 44 个 resolved Tick，
+  每 Tick `state → HTTP 202 → received`，plan action 与 received action 全部相等；
+  mode 全为 `shadow`，combat submission=0，最大重复边失败=0，dynamic edge/cell=0，
+  最大 reservation=17；
+- C8 线上样本的 baseline 为 population=19、17 Worker，所有 Tick
+  `metric_window_eligible=false`；因此不能推出经济、收益或战斗 ROI；当前 state 没有己方
+  Vanguard/Ranger，combat proposal coverage=0，属于未观测，不是战斗成功；
+- C9-C12 均未开放；C11 已拆为 `live-sweep` → `live-precision` → `live-cell` 累进
+  gate，禁止一次开放；D7 rollback 仅恢复 Arena Supervisor 配置和 `/data/arena-hero-agent`
+  代码备份，不涉及全局 Supervisor/Chrome。
 
 本任务清单仍不授权线上行为改变。获得批准后，先执行 C0-C2 和 D1-D2 的
 测试/纯函数批次；C3-C7 仍只完成本地实现与回归。C8-C11 每个线上行为阶段
