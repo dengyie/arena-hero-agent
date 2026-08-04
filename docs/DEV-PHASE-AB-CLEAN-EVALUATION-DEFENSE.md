@@ -1,6 +1,6 @@
 # DEV：Arena Phase A/B — Clean Evaluation 与经济保护防守层
 
-- 状态：**已开发，待 CI/pxed 暂存和线上验收**
+- 状态：**已上线；污染baseline下机制 smoke 通过，clean evaluation/真实威胁待验收**
 - 日期：2026-08-04
 - 前置：`DEV-OFFICIAL-STRATEGY-CONTRACT.md`、`DEV-FRONTIER-LIVENESS-RECOVERY.md`
 - 适用仓库：`/Users/mango/project/arena-hero-agent`
