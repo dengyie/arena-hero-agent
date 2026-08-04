@@ -14,16 +14,23 @@ from urllib.request import Request, ProxyHandler, build_opener
 
 from .journal import Journal
 from .model import snapshot_from_state
+from .path import FRONTIER_PATH_NODE_CAP, MAX_FRONTIER_PATH_EVALUATIONS
 from .policy import (MAX_ECONOMY_WORKERS, MAX_EXTERNAL_RECOVERY_POPULATION,
                      ExplorationMemory, economy_plan, step_position)
 
 LOG = logging.getLogger("arena_agent")
 WS_URL = "wss://api.arenahero.io/api/v1/game/ws"
 HTTP_URL = "https://api.arenahero.io/api/v1/game/commands"
-DIRECT_HTTP = build_opener(ProxyHandler({}))
+STALE_TICK_RECONNECT_THRESHOLD = 3
+
 
 class ProtocolError(RuntimeError): pass
 class PermanentAuthError(RuntimeError): pass
+
+def stale_tick_reconnect_required(streak: int, result: dict[str, Any]) -> tuple[int, bool]:
+    next_streak = streak + 1 if result.get("stale_tick") else 0
+    return next_streak, next_streak >= STALE_TICK_RECONNECT_THRESHOLD
+
 
 def record_received_source(audit: dict[str, Any], received: Any) -> dict[str, Any]:
     """Classify a stored source plan for metrics without affecting decisions."""
@@ -178,6 +185,8 @@ async def run(args: argparse.Namespace) -> int:
                     "baseline_recorded": False, "baseline_contaminated": False,
                     "baseline_worker_count": None, "baseline_population": None,
                     "baseline_over_worker_cap": False}
+    stale_tick_streak = 0
+    reconnect_reason: str | None = None
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     if cookie:
         headers["Cookie"] = cookie
@@ -214,6 +223,9 @@ async def run(args: argparse.Namespace) -> int:
                         record_session_baseline(source_audit, snapshot)
                         plan = economy_plan(snapshot, memory)
                         result = await post_plan(token, tick, plan.as_dict(), args.dry_run, cookie, csrf)
+                        stale_tick_streak, should_reconnect = stale_tick_reconnect_required(stale_tick_streak, result)
+                        if should_reconnect:
+                            reconnect_reason = "stale_tick_streak"
                         raw_state = msg["data"]
                         state_summary = {
                             "status": raw_state.get("status"),
@@ -274,6 +286,9 @@ async def run(args: argparse.Namespace) -> int:
                             "baseline_over_worker_cap": source_audit["baseline_over_worker_cap"],
                         }
                         state_summary["population_control"] = population_control_metrics(snapshot)
+                        state_summary["metric_window_eligible"] = (
+                            not source_audit["window_contaminated"] and not result.get("stale_tick")
+                        )
                         state_summary["policy_state"] = plan.policy_state
                         state_summary["active_target"] = plan.active_target
                         state_summary["waypoint"] = plan.waypoint
@@ -285,6 +300,10 @@ async def run(args: argparse.Namespace) -> int:
                             "failed": len(memory.failed_targets),
                             "failure_reasons": dict(memory.frontier_failure_reasons),
                             "active_targets": len(memory.active_targets),
+                            "path_evaluations": memory.frontier_path_evaluations,
+                            "path_nodes": memory.frontier_path_nodes,
+                            "path_evaluation_cap_per_worker": MAX_FRONTIER_PATH_EVALUATIONS,
+                            "path_node_cap_per_evaluation": FRONTIER_PATH_NODE_CAP,
                         }
                         state_summary["path"] = {
                             "status": plan.path_status,
@@ -322,7 +341,13 @@ async def run(args: argparse.Namespace) -> int:
                         }
                         state_summary["last_event_types"] = plan.last_event_types
                         state_summary["stale_tick"] = bool(result.get("stale_tick"))
+                        state_summary["stale_tick_streak"] = stale_tick_streak
+                        state_summary["reconnect_reason"] = reconnect_reason
                         journal.write("plan", session=session_id, tick=tick, state=state_summary, plan=plan.as_dict(), result=result)
+                        if should_reconnect:
+                            journal.write("session_rejoin", session=session_id,
+                                          reason=reconnect_reason, stale_tick_streak=stale_tick_streak)
+                            break
                         ticks += 1
                         if args.max_ticks > 0 and ticks >= args.max_ticks:
                             return 0
@@ -331,6 +356,13 @@ async def run(args: argparse.Namespace) -> int:
                         journal.write("received", session=session_id, data=received)
                     else:
                         journal.write("unknown_message", session=session_id, data=msg)
+                if reconnect_reason:
+                    journal.write("session_rejoin_complete", session=session_id,
+                                  reason=reconnect_reason, stale_tick_streak=stale_tick_streak)
+                    stale_tick_streak = 0
+                    reconnect_reason = None
+                    await asyncio.sleep(0.5)
+                    continue
                 if saw_message:
                     journal.write("session_end", session=session_id, reason="ws_closed")
                     return 43

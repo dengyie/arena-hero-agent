@@ -3,9 +3,9 @@ import unittest
 from unittest.mock import mock_open, patch
 from arena_agent.allocator import allocate_visible_resources
 from arena_agent.model import Unit, snapshot_from_state
-from arena_agent.path import PathResult
+from arena_agent.path import FRONTIER_PATH_NODE_CAP, MAX_FRONTIER_PATH_EVALUATIONS, PathResult
 from arena_agent.__main__ import (PermanentAuthError, allocator_metrics, population_control_metrics, post_plan,
-                                  record_received_source, record_session_baseline)
+                                  record_received_source, record_session_baseline, stale_tick_reconnect_required)
 from pathlib import Path
 from arena_agent.policy import (
     ExplorationMemory, MAX_BAND_RADIUS, MAX_ECONOMY_WORKERS, MAX_EXTERNAL_RECOVERY_POPULATION, PATH_NODE_CAP,
@@ -26,6 +26,32 @@ class AgentTests(unittest.TestCase):
         }
         data.update(kw)
         return snapshot_from_state(1, data)
+    def test_stale_tick_circuit_breaker_rejoins_after_three_and_resets_on_accepted(self):
+        streak = 0
+        for expected in (1, 2, 3):
+            streak, reconnect = stale_tick_reconnect_required(streak, {"stale_tick": True})
+            self.assertEqual(streak, expected)
+        self.assertTrue(reconnect)
+        streak, reconnect = stale_tick_reconnect_required(streak, {"status": 202})
+        self.assertEqual((streak, reconnect), (0, False))
+
+    def test_frontier_budget_bounds_search_without_marking_budget_as_failure(self):
+        mem = ExplorationMemory()
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        worker = {"kind": "UNIT", "id": "worker", "controlled": True,
+                  "position": [1, 0], "unit_type": "WORKER", "cargo": 0}
+        state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [core, worker], "events": []})
+        mem.begin_frontier_budget()
+        mem.frontier_candidates.clear()
+        mem.frontier_candidates.extend((1000 + offset, 0) for offset in range(20))
+        target, result = mem.next_frontier(state, state.workers[0], frozenset(), set(), max_radius=2000)
+        self.assertLessEqual(mem.frontier_path_evaluations, MAX_FRONTIER_PATH_EVALUATIONS)
+        self.assertLessEqual(mem.frontier_path_nodes,
+                             MAX_FRONTIER_PATH_EVALUATIONS * (FRONTIER_PATH_NODE_CAP + 4))
+        self.assertNotIn("FRONTIER_BUDGET", mem.frontier_failure_reasons)
+        self.assertIn(result.status, {"FOUND", "FRONTIER_BUDGET", "NO_PATH"})
+
     def test_frontier_completion_and_path_failure_reason_are_distinct_from_traffic(self):
         mem = ExplorationMemory()
         worker = Unit("worker", (3, 0), "WORKER", 0, 2)
@@ -447,6 +473,7 @@ class AgentTests(unittest.TestCase):
         # Exhausting a band must refill the next band, then keep reseeding the
         # capped band rather than returning the former EXPLORATION_EXHAUSTED.
         for _ in range(20):
+            mem.begin_frontier_budget()
             mem.frontier_candidates.clear()
             target, result = mem.next_frontier(s, s.workers[0], frozenset(), set())
             self.assertIsNotNone(target)

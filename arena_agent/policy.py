@@ -6,7 +6,8 @@ from typing import Any
 
 from .allocator import allocate_visible_resources
 from .model import Position, Snapshot, Unit
-from .path import DIRECTIONS, PathResult, first_step, plan_path, step_position
+from .path import (DIRECTIONS, FRONTIER_PATH_NODE_CAP, MAX_FRONTIER_PATH_EVALUATIONS,
+                   PathResult, first_step, plan_path, step_position)
 
 RESOURCE_TTL_TICKS = 8
 FRONTIER_STEP = 6
@@ -151,6 +152,9 @@ class ExplorationMemory:
     completed_targets: dict[Position, int] = field(default_factory=dict)
     failed_targets: dict[Position, tuple[int, int]] = field(default_factory=dict)
     frontier_failure_reasons: dict[str, int] = field(default_factory=dict)
+    frontier_path_evaluations: int = 0
+    frontier_path_nodes: int = 0
+    frontier_worker_evaluations: dict[str, int] = field(default_factory=dict)
     active_targets: dict[str, Position] = field(default_factory=dict)
     active_target: Position | None = None
     policy_state: str = "BOOT"
@@ -171,6 +175,9 @@ class ExplorationMemory:
         self.completed_targets.clear()
         self.failed_targets.clear()
         self.frontier_failure_reasons.clear()
+        self.frontier_path_evaluations = 0
+        self.frontier_path_nodes = 0
+        self.frontier_worker_evaluations.clear()
         self.active_targets.clear()
         self.active_target = None
         self.core_full = False
@@ -279,6 +286,22 @@ class ExplorationMemory:
         while len(self.frontier_candidates) > MAX_FRONTIER_CANDIDATES:
             self.frontier_candidates.pop()
 
+    def begin_frontier_budget(self) -> None:
+        self.frontier_path_evaluations = 0
+        self.frontier_path_nodes = 0
+        self.frontier_worker_evaluations.clear()
+
+    def frontier_path(self, worker_id: str, start: Position, target: Position, obstacles: frozenset[Position],
+                      occupied: set[Position]) -> PathResult:
+        used = self.frontier_worker_evaluations.get(worker_id, 0)
+        if used >= MAX_FRONTIER_PATH_EVALUATIONS:
+            return PathResult(None, "FRONTIER_BUDGET", 0, 0, None)
+        self.frontier_worker_evaluations[worker_id] = used + 1
+        self.frontier_path_evaluations += 1
+        result = plan_path(start, {target}, obstacles, occupied, FRONTIER_PATH_NODE_CAP)
+        self.frontier_path_nodes += result.explored_nodes
+        return result
+
     def worker_frontier_radius(self, worker_index: int) -> int:
         return WORKER_FRONTIER_RADII[min(worker_index, len(WORKER_FRONTIER_RADII) - 1)]
 
@@ -294,8 +317,10 @@ class ExplorationMemory:
 
         active = self.active_targets.get(worker.id)
         if active is not None and within_budget(active) and active not in reserved and active not in self.failed_targets:
-            result = plan_path(worker.position, {active}, obstacles, occupied)
-            if result.status == "FOUND":
+            result = self.frontier_path(worker.id, worker.position, active, obstacles, occupied)
+            if result.status in {"FOUND", "START_AT_GOAL"}:
+                return active, result
+            if result.status == "FRONTIER_BUDGET":
                 return active, result
             self.active_targets.pop(worker.id, None)
         candidates = list(self.frontier_candidates)
@@ -307,8 +332,11 @@ class ExplorationMemory:
                     or target in obstacles or target in occupied):
                 self.frontier_candidates.append(target)
                 continue
-            result = plan_path(worker.position, {target}, obstacles, occupied)
-            if result.status != "FOUND":
+            result = self.frontier_path(worker.id, worker.position, target, obstacles, occupied)
+            if result.status == "FRONTIER_BUDGET":
+                self.frontier_candidates.appendleft(target)
+                break
+            if result.status not in {"FOUND", "START_AT_GOAL"}:
                 self.failed_targets[target] = (failures + 1, state.tick + min(12, 2 + failures * 2))
                 self.frontier_failure_reasons[result.status] = (
                     self.frontier_failure_reasons.get(result.status, 0) + 1
@@ -326,8 +354,10 @@ class ExplorationMemory:
             for target in list(self.frontier_candidates):
                 if not within_budget(target) or target in reserved or target in obstacles or target in occupied:
                     continue
-                result = plan_path(worker.position, {target}, obstacles, occupied)
-                if result.status == "FOUND":
+                result = self.frontier_path(worker.id, worker.position, target, obstacles, occupied)
+                if result.status == "FRONTIER_BUDGET":
+                    break
+                if result.status in {"FOUND", "START_AT_GOAL"}:
                     score = (0 if target not in self.completed_targets else 1, result.path_length,
                              target[0], target[1])
                     if best is None or score < best[0]:
@@ -336,8 +366,10 @@ class ExplorationMemory:
             for target in self._build_band(state.core_position, max_radius):
                 if target in reserved or target in obstacles or target in occupied:
                     continue
-                result = plan_path(worker.position, {target}, obstacles, occupied)
-                if result.status == "FOUND":
+                result = self.frontier_path(worker.id, worker.position, target, obstacles, occupied)
+                if result.status == "FRONTIER_BUDGET":
+                    break
+                if result.status in {"FOUND", "START_AT_GOAL"}:
                     score = (target in self.completed_targets, result.path_length, target[0], target[1])
                     if best is None or score < best[0]:
                         best = (score, target, result)
@@ -470,6 +502,7 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
     memory.apply_events(state)
     memory.allocation_count = 0
     memory.allocation_total_cost = 0
+    memory.begin_frontier_budget()
     if state.status != "ACTIVE":
         return _plan({}, memory, policy_state="PAUSE")
 

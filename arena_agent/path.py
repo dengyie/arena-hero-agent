@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from .model import Position
 
 PATH_NODE_CAP = 30_000
+FRONTIER_PATH_NODE_CAP = 2_000
+MAX_FRONTIER_PATH_EVALUATIONS = 8
 PATH_MARGIN = 40
 DIRECTIONS: dict[str, Position] = {
     "UP": (0, -1), "DOWN": (0, 1), "LEFT": (-1, 0), "RIGHT": (1, 0)
@@ -27,7 +29,7 @@ def step_position(position: Position, direction: str) -> Position:
 
 
 def plan_path(start: Position, goals: set[Position], obstacles: frozenset[Position],
-              occupied: set[Position]) -> PathResult:
+              occupied: set[Position], node_cap: int = PATH_NODE_CAP) -> PathResult:
     """Deterministic bounded cardinal BFS from current position to a goal."""
     if not goals:
         return PathResult(None, "NO_PATH", 0, 0, None)
@@ -41,7 +43,7 @@ def plan_path(start: Position, goals: set[Position], obstacles: frozenset[Positi
     queue = deque([(start, None, 0)])
     seen = {start}
     while queue:
-        if len(seen) > PATH_NODE_CAP:
+        if len(seen) > node_cap:
             return PathResult(None, "NODE_CAP", 0, len(seen), None)
         current, first, distance = queue.popleft()
         for direction, delta in DIRECTIONS.items():
