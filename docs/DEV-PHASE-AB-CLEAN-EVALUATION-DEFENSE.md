@@ -1,6 +1,6 @@
 # DEV：Arena Phase A/B — Clean Evaluation 与经济保护防守层
 
-- 状态：**已修复 safe-retreat ingress fairness，待 CI/pxed 暂存和线上复验**
+- 状态：**已上线；safe-retreat ingress fairness 已真实验收；clean evaluation/Phase C 受外部 over-cap baseline阻塞**
 - 日期：2026-08-04
 - 前置：`DEV-OFFICIAL-STRATEGY-CONTRACT.md`、`DEV-FRONTIER-LIVENESS-RECOVERY.md`
 - 适用仓库：`/Users/mango/project/arena-hero-agent`
@@ -343,7 +343,7 @@ empty + enemy_threatens(worker):
 
 随后真实日志又发现多个 safe retreat Worker 到 Core 邻域时互相争用，出现距离 `1↔2` 的最后两格回摆。修复为把 `RETURN_SAFE` 纳入既有 Core ingress queue：近区仅队首可接近 Core，其他撤离Worker显式 `CORE_INGRESS_HOLD`；`RETURN_CORE`（携货交付）永远排在同一批新进入者的 `RETURN_SAFE` 之前。队首到Core释放 retreat后，下一名才推进。
 
-线上复验又暴露每 Tick按距离重排 queue 会让后来 carrier反复插入已排队 safe retreat，造成近区饥饿。最终规则：已有 ingress成员保持相对顺序；离开 `RETURN_CORE/RETURN_SAFE` 事务者移除；仅新进入者追加，并在该新批次内使用 `RETURN_CORE` 优先。这不让撤离抢占已排队交付，也保证已排队撤离不会被后续carrier无限饿死。
+线上复验又暴露每 Tick按距离重排 queue 会让后来 carrier反复插入已排队 safe retreat，造成近区饥饿。最终规则：已有 ingress成员保持相对顺序；离开 `RETURN_CORE/RETURN_SAFE` 事务者移除；仅新进入者追加，并在该新批次内使用 `RETURN_CORE` 优先。这不让撤离抢占已排队交付，也保证已排队撤离不会被后续carrier无限饿死。真实验收：`515…` 作为队首从 RETURN_SAFE distance `3→0` 后释放为 EXPLORE；`d585…` 先在 `CORE_INGRESS_HOLD` 等待，轮到队首后从 `3→0` 并释放；`975…` 携货 RETURN_CORE 也完成并恢复 EXPLORE。
 
 ### 6.3 Vanguard 防守规则
 
