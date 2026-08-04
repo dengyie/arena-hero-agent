@@ -171,7 +171,7 @@ Ranger: 仅已存在 Ranger；当前可见 UNIT/CORE、水平/垂直/45度、距
 
 战斗 safety fuse 已上线：当前完整 state 可确认的己方 `UNIT_DAMAGED/ATTACK` → Ranger fire cooldown 12 Tick；己方 hp=0 或 `WORKER_CARGO_DROPPED` → 40 Tick cooldown。Ranger cooldown 内强制 WAIT；Vanguard仍只保留相邻本地防御 SWEEP。敌方受伤/死亡绝不写入己方风险账本。此门由线上真实 `SHOT_HIT` 同时伴随多个己方 Worker hp=0/cargo drop 驱动；先保护经济，再评估战斗收益。上线首段 13/13 HTTP 202，但无可见敌人/新 ATTACK，故 `cooldown=0 / ranger_fire_allowed=true` 是无触发条件的正确状态；尚待下一真实己方受攻击事件验收 cooldown 闭环。
 
-战斗损益账本已开发、待线上 episode 验收：`hp=0` 仅为 candidate；只有己方 Unit 在**下一完整 owned state**缺失才确认 friendly death。敌方是私有可见性，不得以“下一 state 不可见”判定 kill；只记录官方 `DESTRUCTION_PARTICIPATION` 为本方参与敌方 destruction。episode 在 8 Tick 无 combat event 后关闭，输出 shots hit/miss、Sweep targets hit、outgoing/incoming damage、confirmed friendly deaths、friendly cargo lost 与 enemy destruction participations。
+战斗损益账本已上线：`hp=0` 仅为 candidate；只有己方 Unit 在**下一完整 owned state**缺失才确认 friendly death。敌方是私有可见性，不得以“下一 state 不可见”判定 kill；只记录官方 `DESTRUCTION_PARTICIPATION` 为本方参与敌方 destruction。episode 在 8 Tick 无 combat event 后关闭，输出 shots hit/miss、Sweep targets hit、outgoing/incoming damage、confirmed friendly deaths、friendly cargo lost 与 enemy destruction participations。上线首段10/10 HTTP 202且新字段完整，但无敌方/攻击，故没有真实 episode 或 confirmed loss，仍待干净窗口实战验收。
 
 禁止：Ranger/Vanguard 自动生产、追击、历史敌方坐标、Beacon、Core migration、在 `CORE_FULL_EXTERNAL_CAP_HOLD` 下以战斗绕开人口管理。首次上线已验证协议/telemetry：新 session 16/16 HTTP 202，当前可见 1 名敌方 Unit，但没有已存在 Ranger且 Vanguard未相邻，故无攻击提交；尚无 `SWEEP_RESOLVED` 或 shot result，不能宣称战斗收益。
 
