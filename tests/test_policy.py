@@ -6,8 +6,8 @@ from arena_agent.combat import intermediate_cells, ranger_line_distance, ranger_
 from arena_agent.model import Unit, snapshot_from_state
 from arena_agent.path import (FRONTIER_PATH_NODE_CAP, MAX_FRONTIER_PATH_EVALUATIONS,
                               PathResult, plan_frontier_path)
-from arena_agent.__main__ import (PermanentAuthError, allocator_metrics, operator_attention_metrics,
-                                  population_control_metrics, post_plan, record_population_transition,
+from arena_agent.__main__ import (PermanentAuthError, ResourceSupplyMetrics, allocator_metrics,
+                                  operator_attention_metrics, population_control_metrics, post_plan, record_population_transition,
                                   record_received_source, record_session_baseline, stale_tick_reconnect_required)
 from pathlib import Path
 from arena_agent.policy import (
@@ -114,6 +114,35 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(mem.active_targets["worker"], (10, 0))
         self.assertNotIn((10, 0), mem.failed_targets)
         self.assertTrue(mem.traffic.is_edge_blocked("worker", (1, 0), "RIGHT", 2))
+
+    def test_resource_supply_metrics_count_only_clean_visibility_transitions_and_resolutions(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        worker = {"kind": "UNIT", "id": "worker", "controlled": True,
+                  "position": [1, 0], "unit_type": "WORKER", "cargo": 0}
+        metrics = ResourceSupplyMetrics()
+        mem = ExplorationMemory()
+        empty = snapshot_from_state(1, {"status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [core, worker], "events": []})
+        empty_plan = economy_plan(empty, mem)
+        metrics.observe(empty, empty_plan, eligible=True)
+        visible = snapshot_from_state(2, {"status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [core, worker, {"kind": "RESOURCE", "positions": [[1, 0]]}], "events": []})
+        visible_plan = economy_plan(visible, mem)
+        metrics.observe(visible, visible_plan, eligible=True)
+        resolved = snapshot_from_state(3, {"status": "ACTIVE", "resources": 1, "population": 1,
+            "objects": [core, worker],
+            "events": [{"event_id": "h", "event_type": "HARVEST_SUCCEEDED", "actor_id": "worker", "position": [1, 0]}]})
+        metrics.observe(resolved, economy_plan(resolved, mem), eligible=True)
+        deposited = snapshot_from_state(4, {"status": "ACTIVE", "resources": 1, "population": 1,
+            "objects": [core, worker],
+            "events": [{"event_id": "d", "event_type": "DEPOSIT_SUCCEEDED", "actor_id": "worker", "position": [0, 0]}]})
+        metrics.observe(deposited, economy_plan(deposited, mem), eligible=False)
+        self.assertEqual(metrics.as_dict(), {
+            "clean_ticks": 3, "starved_ticks": 2, "visible_resource_ticks": 1,
+            "discovery_transitions": 1, "harvests": 1, "deposits": 0,
+            "action_counts": {"HARVEST": 1, "MOVE": 2},
+            "intent_counts": {"EXPLORE": 2, "RESOURCE": 1},
+        })
 
     def test_allocator_metrics_distinguish_resource_starvation_from_unmatched_work(self):
         core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}

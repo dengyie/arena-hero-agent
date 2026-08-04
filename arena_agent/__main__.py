@@ -112,6 +112,57 @@ def allocator_metrics(snapshot, matched: int, total_cost: int) -> dict[str, Any]
     }
 
 
+class ResourceSupplyMetrics:
+    """Session-local clean-window accounting; never drives policy decisions."""
+
+    def __init__(self) -> None:
+        self.clean_ticks = 0
+        self.starved_ticks = 0
+        self.visible_resource_ticks = 0
+        self.discovery_transitions = 0
+        self.harvests = 0
+        self.deposits = 0
+        self.action_counts: dict[str, int] = {}
+        self.intent_counts: dict[str, int] = {}
+        self._prior_visible_resources: int | None = None
+
+    def observe(self, snapshot: Any, plan: Any, *, eligible: bool) -> None:
+        visible = len(snapshot.resource_cells)
+        if not eligible:
+            self._prior_visible_resources = None
+            return
+        self.clean_ticks += 1
+        if visible:
+            self.visible_resource_ticks += 1
+        elif snapshot.workers:
+            self.starved_ticks += 1
+        if self._prior_visible_resources == 0 and visible > 0:
+            self.discovery_transitions += 1
+        self._prior_visible_resources = visible
+        for event in snapshot.events:
+            if event.get("event_type") == "HARVEST_SUCCEEDED":
+                self.harvests += 1
+            elif event.get("event_type") == "DEPOSIT_SUCCEEDED":
+                self.deposits += 1
+        for worker in snapshot.workers:
+            action = str(plan.unit_actions.get(worker.id, {}).get("type", "OMITTED"))
+            self.action_counts[action] = self.action_counts.get(action, 0) + 1
+            intent = plan.worker_intents.get(worker.id, (None, "UNASSIGNED"))[1]
+            self.intent_counts[intent] = self.intent_counts.get(intent, 0) + 1
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "clean_ticks": self.clean_ticks,
+            "starved_ticks": self.starved_ticks,
+            "visible_resource_ticks": self.visible_resource_ticks,
+            "discovery_transitions": self.discovery_transitions,
+            "harvests": self.harvests,
+            "deposits": self.deposits,
+            "action_counts": dict(sorted(self.action_counts.items())),
+            "intent_counts": dict(sorted(self.intent_counts.items())),
+        }
+
+
 async def post_plan(token: str, tick: int, plan: dict[str, Any], dry_run: bool, cookie: str = "", csrf: str = "") -> dict[str, Any]:
     body = {"tick": tick, **plan}
     if dry_run:
@@ -201,6 +252,7 @@ async def run(args: argparse.Namespace) -> int:
         raise SystemExit("ARENA_HERO_TOKEN or ARENA_HERO_COOKIE is required for --live")
     journal = Journal(args.journal)
     memory = ExplorationMemory()
+    resource_supply = ResourceSupplyMetrics()
     source_audit = {"manual_interventions": 0, "external_core_actions": 0,
                     "window_contaminated": False, "last_received": None,
                     "baseline_recorded": False, "baseline_contaminated": False,
@@ -252,6 +304,8 @@ async def run(args: argparse.Namespace) -> int:
                         if should_reconnect:
                             reconnect_reason = "stale_tick_streak"
                         raw_state = msg["data"]
+                        metrics_eligible = not source_audit["window_contaminated"] and not result.get("stale_tick")
+                        resource_supply.observe(snapshot, plan, eligible=metrics_eligible)
                         state_summary = {
                             "status": raw_state.get("status"),
                             "resources": raw_state.get("resources"),
@@ -312,9 +366,8 @@ async def run(args: argparse.Namespace) -> int:
                             "unattributed_population_increases": source_audit["unattributed_population_increases"],
                         }
                         state_summary["population_control"] = population_control_metrics(snapshot)
-                        state_summary["metric_window_eligible"] = (
-                            not source_audit["window_contaminated"] and not result.get("stale_tick")
-                        )
+                        state_summary["metric_window_eligible"] = metrics_eligible
+                        state_summary["resource_supply"] = resource_supply.as_dict()
                         state_summary["operator_attention"] = operator_attention_metrics(snapshot, plan.policy_state)
                         state_summary["policy_state"] = plan.policy_state
                         state_summary["active_target"] = plan.active_target

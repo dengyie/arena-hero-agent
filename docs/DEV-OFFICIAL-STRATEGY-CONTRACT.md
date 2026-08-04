@@ -257,7 +257,9 @@ P1  source audit 在每次进程启动第一份 state 记录 baseline worker cou
 
 frontier 搜索现限制为每 Worker/每 Tick最多 8 次、每次最多 2000 节点；资源分配、返 Core 和 traffic 搜索仍使用原节点预算。journal 已包含 path evaluations/nodes 和 metric-window eligibility。`bb3fbea` 将 `NODE_CAP` retry 拉长为 8–60 Tick，避免远端候选快速重复消耗节点；`NO_PATH` 保留短退避。A* frontier 内核仅用于单一远端 waypoint，已完成真实线上首段验收：13/13 HTTP 202、`NODE_CAP delta=0`、CPU `1.7%`、191 次移动成功、2 次交付、1 次采集；随后 27 Tick 中 completed `+5`、Node-cap仍为零。
 
-每个当前 owned Worker 现在在每份 Agent plan 中都有显式 action（不依赖省略字段的隐式 WAIT）；journal `worker_trace` 写 position/cargo/action/intent kind/target/distance，`unassigned_workers` 必须为空。此为一次零策略改动的可审计性修复：此前日志出现 owned Worker 与计划摘要无法一一关联，不能据此盲调 traffic/frontier。上线 35 Tick 验收：`unassigned_workers=0`；两个 RETURN_CORE Worker 的同一 target 距离分别 `42→5`、`52→18` 且稳定 target 下 nonprogress=0；Explore Worker `24→6`，仅 5/33 非进展步。当前 `HARVEST=1 / DEPOSIT=0` 是远程资源的在途返程而非交通卡死，末态为当前视野无资源的 `resource_starved=true`。人口达到官方 tier 0 ceiling=19 后，任何未来 `CORE_FULL_EXTERNAL_CAP_HOLD` 会写入 `operator_attention.required=true`、原因和 blocked cargo 数，要求人工人口管理；不自动 SELF_DESTRUCT 或跨入 tier 1 upkeep。
+每个当前 owned Worker 现在在每份 Agent plan 中都有显式 action（不依赖省略字段的隐式 WAIT）；journal `worker_trace` 写 position/cargo/action/intent kind/target/distance，`unassigned_workers` 必须为空。此为一次零策略改动的可审计性修复：此前日志出现 owned Worker 与计划摘要无法一一关联，不能据此盲调 traffic/frontier。上线 35 Tick 验收：`unassigned_workers=0`；两个 RETURN_CORE Worker 的同一 target 距离分别 `42→5`、`52→18` 且稳定 target 下 nonprogress=0；Explore Worker `24→6`，仅 5/33 非进展步。当前 `HARVEST=1 / DEPOSIT=0` 是远程资源的在途返程而非交通卡死，末态为当前视野无资源的 `resource_starved=true`。
+
+`resource_supply` 是 session-local、clean-window-only 的纯指标：统计 clean/starved/visible-resource ticks、`0→visible` discovery transitions、HARVEST/DEPOSIT resolution、以及 per-worker action/intent totals；污染或 stale tick 不进入分母且会切断 discovery transition。它用于先区分私有视野资源供给、匹配、采集和在途返程，不直接改变 frontier radius、Worker cap、combat 或 Core action。人口达到官方 tier 0 ceiling=19 后，任何未来 `CORE_FULL_EXTERNAL_CAP_HOLD` 会写入 `operator_attention.required=true`、原因和 blocked cargo 数，要求人工人口管理；不自动 SELF_DESTRUCT 或跨入 tier 1 upkeep。
 
 ## 10. 发布与回滚
 
