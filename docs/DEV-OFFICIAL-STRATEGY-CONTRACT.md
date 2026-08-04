@@ -167,6 +167,8 @@ Ranger: 仅已存在 Ranger；当前可见 UNIT/CORE、水平/垂直/45度、距
 
 战斗事件账本仅接受下一完整 state 的 `SWEEP_RESOLVED`、`SHOT_HIT`、`SHOT_MISSED`、`UNIT_DAMAGED/ATTACK`、`DESTRUCTION_PARTICIPATION`；`hp=0` 是 death candidate，只有同一完整 state 的 target 缺失才能确认 kill。journal 不记录完整敌方 state，只写可见计数、submitted action、最近结果和 death candidates。
 
+人口/收益审计也必须完整：session 内若权威 population 增加且前一份本 Agent 已存储 plan 不是 `SPAWN`，则 `unattributed_population_increases` 累计并强制 `window_contaminated=true`。这是针对线上已观测的 population `19→21`、`Manual=0` 的跨 source/跨 session 增长；该类窗口不得用于战斗或经济收益结论。
+
 禁止：Ranger/Vanguard 自动生产、追击、历史敌方坐标、Beacon、Core migration、在 `CORE_FULL_EXTERNAL_CAP_HOLD` 下以战斗绕开人口管理。首次上线只以真实 `SWEEP_RESOLVED` 或 `SHOT_HIT/SHOT_MISSED` 事件验证，不凭 202/received 宣称战斗成功。
 
 ## 8. 当前实现与验证状态

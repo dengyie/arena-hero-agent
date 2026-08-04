@@ -7,7 +7,7 @@ from arena_agent.model import Unit, snapshot_from_state
 from arena_agent.path import (FRONTIER_PATH_NODE_CAP, MAX_FRONTIER_PATH_EVALUATIONS,
                               PathResult, plan_frontier_path)
 from arena_agent.__main__ import (PermanentAuthError, allocator_metrics, operator_attention_metrics,
-                                  population_control_metrics, post_plan,
+                                  population_control_metrics, post_plan, record_population_transition,
                                   record_received_source, record_session_baseline, stale_tick_reconnect_required)
 from pathlib import Path
 from arena_agent.policy import (
@@ -134,6 +134,23 @@ class AgentTests(unittest.TestCase):
             "eligible": 3, "visible_resources": 3, "matched": 2,
             "unmatched_eligible": 1, "resource_starved": False, "total_cost": 900,
         })
+
+    def test_unattributed_population_growth_marks_window_but_agent_spawn_does_not(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        def snapshot(population):
+            return snapshot_from_state(population, {"status": "ACTIVE", "resources": 0,
+                "population": population, "objects": [core], "events": []})
+        audit = {"last_population": None, "unattributed_population_increases": 0,
+                 "window_contaminated": False}
+        record_population_transition(audit, snapshot(10), None)
+        record_population_transition(audit, snapshot(11), None)
+        self.assertEqual(audit["unattributed_population_increases"], 1)
+        self.assertTrue(audit["window_contaminated"])
+        audit = {"last_population": 11, "unattributed_population_increases": 0,
+                 "window_contaminated": False}
+        record_population_transition(audit, snapshot(12), "SPAWN")
+        self.assertEqual(audit["unattributed_population_increases"], 0)
+        self.assertFalse(audit["window_contaminated"])
 
     def test_operator_attention_marks_population_ceiling_hold_only(self):
         core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}

@@ -67,6 +67,18 @@ def record_session_baseline(audit: dict[str, Any], snapshot: Any) -> None:
         audit["window_contaminated"] = True
 
 
+def record_population_transition(audit: dict[str, Any], snapshot: Any, prior_agent_core_action: str | None) -> None:
+    """Mark population jumps not explained by this Agent's previously stored SPAWN."""
+    prior = audit.get("last_population")
+    audit["last_population"] = snapshot.population
+    if prior is None or snapshot.population <= prior:
+        return
+    if prior_agent_core_action == "SPAWN":
+        return
+    audit["unattributed_population_increases"] += snapshot.population - prior
+    audit["window_contaminated"] = True
+
+
 def population_control_metrics(snapshot: Any) -> dict[str, Any]:
     worker_count = len(snapshot.workers)
     return {
@@ -193,7 +205,8 @@ async def run(args: argparse.Namespace) -> int:
                     "window_contaminated": False, "last_received": None,
                     "baseline_recorded": False, "baseline_contaminated": False,
                     "baseline_worker_count": None, "baseline_population": None,
-                    "baseline_over_worker_cap": False}
+                    "baseline_over_worker_cap": False, "last_population": None,
+                    "last_agent_core_action": None, "unattributed_population_increases": 0}
     stale_tick_streak = 0
     reconnect_reason: str | None = None
     headers = {"Authorization": f"Bearer {token}"} if token else {}
@@ -230,9 +243,12 @@ async def run(args: argparse.Namespace) -> int:
                             raise ProtocolError("state arrived before tick")
                         snapshot = snapshot_from_state(tick, msg["data"])
                         record_session_baseline(source_audit, snapshot)
+                        record_population_transition(source_audit, snapshot, source_audit["last_agent_core_action"])
                         plan = economy_plan(snapshot, memory)
                         result = await post_plan(token, tick, plan.as_dict(), args.dry_run, cookie, csrf)
                         stale_tick_streak, should_reconnect = stale_tick_reconnect_required(stale_tick_streak, result)
+                        if result.get("status") == 202:
+                            source_audit["last_agent_core_action"] = (plan.core_action or {}).get("type")
                         if should_reconnect:
                             reconnect_reason = "stale_tick_streak"
                         raw_state = msg["data"]
@@ -293,6 +309,7 @@ async def run(args: argparse.Namespace) -> int:
                             "baseline_worker_count": source_audit["baseline_worker_count"],
                             "baseline_population": source_audit["baseline_population"],
                             "baseline_over_worker_cap": source_audit["baseline_over_worker_cap"],
+                            "unattributed_population_increases": source_audit["unattributed_population_increases"],
                         }
                         state_summary["population_control"] = population_control_metrics(snapshot)
                         state_summary["metric_window_eligible"] = (
