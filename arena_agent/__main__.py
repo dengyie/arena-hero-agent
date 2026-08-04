@@ -520,6 +520,7 @@ async def run(args: argparse.Namespace) -> int:
                         current_threatened_workers = threatened_workers(snapshot)
                         state_summary["defense"] = {
                             "threatened_workers": sorted(current_threatened_workers),
+                            "safe_retreat_workers": sorted(memory.safe_retreat_workers),
                             "core_threatened": core_threatened(snapshot),
                             "worker_defense_reasons": {
                                 worker.id: (

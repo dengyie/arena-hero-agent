@@ -1016,6 +1016,26 @@ class AgentTests(unittest.TestCase):
         metrics.observe(pending, pending_plan, mem, eligible=False)
         self.assertEqual(metrics.as_dict()["fallback_outcomes"]["ABORTED_CONTAMINATED"], 1)
 
+    def test_safe_retreat_sticks_until_core_after_threat_visibility_flaps(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        worker = {"kind": "UNIT", "id": "worker", "controlled": True,
+                  "position": [2, 0], "unit_type": "WORKER", "cargo": 0}
+        enemy = {"kind": "UNIT", "id": "enemy", "controlled": False,
+                 "position": [3, 0], "unit_type": "WORKER"}
+        mem = ExplorationMemory()
+        threatened = snapshot_from_state(1, {"status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [core, worker, enemy], "events": []})
+        first = economy_plan(threatened, mem)
+        self.assertEqual(first.worker_intents["worker"], ((0, 0), "RETURN_SAFE"))
+        unthreatened = snapshot_from_state(2, {"status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [core, {**worker, "position": [1, 0]}], "events": []})
+        second = economy_plan(unthreatened, mem)
+        self.assertEqual(second.worker_intents["worker"], ((0, 0), "RETURN_SAFE"))
+        arrived = snapshot_from_state(3, {"status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [core, {**worker, "position": [0, 0]}], "events": []})
+        third = economy_plan(arrived, mem)
+        self.assertNotEqual(third.worker_intents["worker"][1], "RETURN_SAFE")
+
     def test_defense_restricts_vanguard_and_ranger_to_core_local_economy_protection(self):
         core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
         vanguard = {"kind": "UNIT", "id": "vanguard", "controlled": True,

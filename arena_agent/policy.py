@@ -211,6 +211,7 @@ class ExplorationMemory:
     frontier_fallback_assignments: int = 0
     frontier_arrival_wait_ticks: int = 0
     frontier_completion_transitions: set[str] = field(default_factory=set)
+    safe_retreat_workers: set[str] = field(default_factory=set)
 
     def _reset_for_core(self, state: Snapshot) -> None:
         self.route_core = state.core_position
@@ -226,6 +227,7 @@ class ExplorationMemory:
         self.frontier_worker_evaluations.clear()
         self.active_targets.clear()
         self.active_target = None
+        self.safe_retreat_workers.clear()
         self.core_full = False
         self.recovery_cooldown_until = 0
         self.allocation_count = 0
@@ -250,6 +252,11 @@ class ExplorationMemory:
         self.completion_cooldowns = {
             target: until for target, until in self.completion_cooldowns.items()
             if until > state.tick
+        }
+        self.safe_retreat_workers = {
+            worker.id for worker in state.workers
+            if worker.id in self.safe_retreat_workers and worker.position != state.core_position
+            and worker.cargo <= 0 and (worker.hp is None or worker.hp > 1)
         }
         self.ledger.trim(state.tick)
         self.traffic.trim(state.tick)
@@ -732,6 +739,11 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
         return _plan({}, memory, policy_state="PAUSE")
 
     threatened_worker_ids = threatened_workers(state)
+    memory.safe_retreat_workers.update(
+        worker_id for worker_id in threatened_worker_ids
+        if any(worker.id == worker_id and worker.cargo <= 0 and (worker.hp is None or worker.hp > 1)
+               for worker in state.workers)
+    )
     actions = {unit.id: {"type": "WAIT"} for unit in state.units if unit.unit_type not in {"WORKER", "RANGER"}}
     actions.update(vanguard_guard_actions(state, threatened_worker_ids=threatened_worker_ids))
     actions.update(ranger_actions(
@@ -801,7 +813,7 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
             continue
         desired[worker.id] = (worker, state.core_position, "RETURN_HEAL")
     for worker in workers:
-        if worker.id in desired or worker.id not in threatened_worker_ids or state.core_position is None:
+        if worker.id in desired or worker.id not in memory.safe_retreat_workers or state.core_position is None:
             continue
         desired[worker.id] = (worker, state.core_position, "RETURN_SAFE")
     empty = [w for w in workers if w.id not in desired]
