@@ -231,6 +231,12 @@ P1  source audit 在每次进程启动第一份 state 记录 baseline worker cou
 
 这不启用普通 cap 外扩张、战斗、Beacon 或 Core migration。exceptional recovery 已完成两次真实线上闭环：外部 baseline 被标记污染后，每次收到 `CORE_RESOURCE_FULL`，Agent 只发一条 `CORE_FULL_EXTERNAL_CAP_RECOVERY`，随后收到 `CORE_SPAWN_SUCCEEDED` 与 `DEPOSIT_SUCCEEDED`。最新官方 tier 验收为 population `15→16`、18/18 HTTP 202、3 次 `DEPOSIT_SUCCEEDED`；普通 cap 仍为 8，population 永不由此跨入 19 以上的 upkeep tier 1。
 
+## 9.3 协议 ownership 与有界 frontier 搜索（已上线，NODE_CAP 退避待部署）
+
+`015c688` 已修复持续 stale session：单次 restart handoff 可保留；连续三次 `TICK_MISMATCH` 时写入 `session_rejoin` 并同进程重连，停止无限高成本规划/POST。线上首段已从旧版 55 连续 stale 恢复为 1 次 stale 后 11/11 HTTP 202、12 receipt，CPU `74.4%→5.0%`。
+
+frontier 搜索现限制为每 Worker/每 Tick最多 8 次、每次最多 2000 BFS 节点；资源分配、返 Core 和 traffic 搜索仍使用原节点预算。journal 已包含 path evaluations/nodes 和 metric-window eligibility。当前 Node-cap 重试仍在观测中，下一补丁将 `NODE_CAP` 的 retry 拉长为 8–60 Tick，避免远端候选快速重复消耗节点；`NO_PATH` 保留短退避。
+
 ## 10. 发布与回滚
 
 ```text

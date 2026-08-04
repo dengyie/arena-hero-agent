@@ -286,6 +286,11 @@ class ExplorationMemory:
         while len(self.frontier_candidates) > MAX_FRONTIER_CANDIDATES:
             self.frontier_candidates.pop()
 
+    def frontier_retry_after(self, status: str, failures: int, tick: int) -> int:
+        if status == "NODE_CAP":
+            return tick + min(60, 8 * (failures + 1))
+        return tick + min(12, 2 + failures * 2)
+
     def begin_frontier_budget(self) -> None:
         self.frontier_path_evaluations = 0
         self.frontier_path_nodes = 0
@@ -337,7 +342,7 @@ class ExplorationMemory:
                 self.frontier_candidates.appendleft(target)
                 break
             if result.status not in {"FOUND", "START_AT_GOAL"}:
-                self.failed_targets[target] = (failures + 1, state.tick + min(12, 2 + failures * 2))
+                self.failed_targets[target] = (failures + 1, self.frontier_retry_after(result.status, failures, state.tick))
                 self.frontier_failure_reasons[result.status] = (
                     self.frontier_failure_reasons.get(result.status, 0) + 1
                 )

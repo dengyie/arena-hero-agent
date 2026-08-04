@@ -26,6 +26,13 @@ class AgentTests(unittest.TestCase):
         }
         data.update(kw)
         return snapshot_from_state(1, data)
+    def test_frontier_node_cap_uses_longer_bounded_retry_than_no_path(self):
+        mem = ExplorationMemory()
+        self.assertEqual(mem.frontier_retry_after("NODE_CAP", 0, 10), 18)
+        self.assertEqual(mem.frontier_retry_after("NODE_CAP", 99, 10), 70)
+        self.assertEqual(mem.frontier_retry_after("NO_PATH", 0, 10), 12)
+        self.assertEqual(mem.frontier_retry_after("NO_PATH", 99, 10), 22)
+
     def test_stale_tick_circuit_breaker_rejoins_after_three_and_resets_on_accepted(self):
         streak = 0
         for expected in (1, 2, 3):
