@@ -7,7 +7,7 @@ from typing import Any
 from .allocator import allocate_visible_resources
 from .model import Position, Snapshot, Unit
 from .path import (DIRECTIONS, FRONTIER_PATH_NODE_CAP, MAX_FRONTIER_PATH_EVALUATIONS,
-                   PathResult, first_step, plan_path, step_position)
+                   PathResult, first_step, plan_frontier_path, plan_path, step_position)
 
 RESOURCE_TTL_TICKS = 8
 FRONTIER_STEP = 6
@@ -303,7 +303,7 @@ class ExplorationMemory:
             return PathResult(None, "FRONTIER_BUDGET", 0, 0, None)
         self.frontier_worker_evaluations[worker_id] = used + 1
         self.frontier_path_evaluations += 1
-        result = plan_path(start, {target}, obstacles, occupied, FRONTIER_PATH_NODE_CAP)
+        result = plan_frontier_path(start, target, obstacles, occupied, FRONTIER_PATH_NODE_CAP)
         self.frontier_path_nodes += result.explored_nodes
         return result
 

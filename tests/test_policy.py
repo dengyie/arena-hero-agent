@@ -3,7 +3,8 @@ import unittest
 from unittest.mock import mock_open, patch
 from arena_agent.allocator import allocate_visible_resources
 from arena_agent.model import Unit, snapshot_from_state
-from arena_agent.path import FRONTIER_PATH_NODE_CAP, MAX_FRONTIER_PATH_EVALUATIONS, PathResult
+from arena_agent.path import (FRONTIER_PATH_NODE_CAP, MAX_FRONTIER_PATH_EVALUATIONS,
+                              PathResult, plan_frontier_path)
 from arena_agent.__main__ import (PermanentAuthError, allocator_metrics, population_control_metrics, post_plan,
                                   record_received_source, record_session_baseline, stale_tick_reconnect_required)
 from pathlib import Path
@@ -26,6 +27,16 @@ class AgentTests(unittest.TestCase):
         }
         data.update(kw)
         return snapshot_from_state(1, data)
+    def test_frontier_astar_bounds_distant_search_and_routes_around_obstacle(self):
+        direct = plan_frontier_path((0, 0), (500, 0), frozenset(), set(), node_cap=2_000)
+        self.assertEqual((direct.status, direct.path_length, direct.direction), ("FOUND", 500, "RIGHT"))
+        self.assertLess(direct.explored_nodes, 1_100)
+        detour = plan_frontier_path((0, 0), (4, 0), frozenset({(1, 0), (2, 0), (3, 0)}), set())
+        self.assertEqual(detour.status, "FOUND")
+        self.assertIn(detour.direction, {"UP", "DOWN"})
+        capped = plan_frontier_path((0, 0), (500, 0), frozenset(), set(), node_cap=4)
+        self.assertEqual(capped.status, "NODE_CAP")
+
     def test_frontier_node_cap_uses_longer_bounded_retry_than_no_path(self):
         mem = ExplorationMemory()
         self.assertEqual(mem.frontier_retry_after("NODE_CAP", 0, 10), 18)
