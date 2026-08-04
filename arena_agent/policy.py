@@ -25,6 +25,8 @@ SPAWN_MIN_RESOURCES = 12
 SPAWN_DEPOSITS_REQUIRED = 3
 SPAWN_WINDOW_TICKS = 20
 RISK_WINDOW_TICKS = 20
+COMBAT_DAMAGE_COOLDOWN_TICKS = 12
+COMBAT_LOSS_COOLDOWN_TICKS = 40
 WORKER_FRONTIER_RADII = (21, 33, 51, 75)
 MAX_ECONOMY_WORKERS = 8
 MAX_EXTERNAL_RECOVERY_POPULATION = 19
@@ -59,6 +61,9 @@ class EventLedger:
     core_defense_events: deque[str] = field(default_factory=deque)
     combat_events: deque[dict[str, Any]] = field(default_factory=deque)
     combat_deaths: deque[dict[str, Any]] = field(default_factory=deque)
+    combat_cargo_drops: deque[dict[str, Any]] = field(default_factory=deque)
+    combat_cooldown_until: int = 0
+    controlled_unit_ids: set[str] = field(default_factory=set)
 
     def accept(self, event: dict[str, Any]) -> bool:
         event_id = str(event.get("event_id", ""))
@@ -209,6 +214,8 @@ class ExplorationMemory:
 
     def apply_events(self, state: Snapshot) -> None:
         self.last_event_types = tuple(str(event.get("event_type")) for event in state.events)
+        current_controlled_ids = {unit.id for unit in state.units}
+        controlled_ids = self.ledger.controlled_unit_ids | current_controlled_ids
         for event in state.events:
             if not self.ledger.accept(event):
                 continue
@@ -252,18 +259,38 @@ class ExplorationMemory:
                     self.ledger.combat_events.popleft()
             elif kind == "UNIT_DAMAGED" and event.get("reason_code") == "ATTACK":
                 target_id = str(event.get("target_id", ""))
-                self.ledger.record_worker_damage(target_id, state.tick)
+                if target_id in controlled_ids:
+                    self.ledger.record_worker_damage(target_id, state.tick)
                 hp = int(event.get("values", {}).get("hp", -1))
                 self.ledger.combat_events.append({
                     "type": "UNIT_DAMAGED", "target_id": target_id,
                     "damage": int(event.get("values", {}).get("damage", 0)), "hp": hp,
                 })
+                if target_id in controlled_ids:
+                    self.ledger.combat_cooldown_until = max(
+                        self.ledger.combat_cooldown_until, state.tick + COMBAT_DAMAGE_COOLDOWN_TICKS
+                    )
                 if hp == 0:
                     self.ledger.combat_deaths.append({"target_id": target_id, "tick": state.tick})
+                    if target_id in controlled_ids:
+                        self.ledger.combat_cooldown_until = max(
+                            self.ledger.combat_cooldown_until, state.tick + COMBAT_LOSS_COOLDOWN_TICKS
+                        )
                 while len(self.ledger.combat_events) > MAX_EVENT_IDS:
                     self.ledger.combat_events.popleft()
                 while len(self.ledger.combat_deaths) > MAX_EVENT_IDS:
                     self.ledger.combat_deaths.popleft()
+            elif kind == "WORKER_CARGO_DROPPED":
+                owner_id = actor_id
+                entry = {"worker_id": owner_id or None, "amount": int(event.get("values", {}).get("amount", 0)),
+                         "tick": state.tick}
+                self.ledger.combat_cargo_drops.append(entry)
+                if owner_id in controlled_ids:
+                    self.ledger.combat_cooldown_until = max(
+                        self.ledger.combat_cooldown_until, state.tick + COMBAT_LOSS_COOLDOWN_TICKS
+                    )
+                while len(self.ledger.combat_cargo_drops) > MAX_EVENT_IDS:
+                    self.ledger.combat_cargo_drops.popleft()
             elif kind == "UPKEEP_PAID":
                 values = event.get("values", {})
                 self.ledger.upkeep_events.append({key: int(values.get(key, 0)) for key in ("due", "paid", "deficit")})
@@ -280,6 +307,7 @@ class ExplorationMemory:
             elif kind == "CORE_DESTROYED":
                 self.active_targets.clear()
                 self.core_full = False
+        self.ledger.controlled_unit_ids = current_controlled_ids
 
     def _trim(self) -> None:
         while len(self.completed_targets) > MAX_COMPLETED_TARGETS:
@@ -475,6 +503,15 @@ def vanguard_guard_actions(state: Snapshot) -> dict[str, dict[str, Any]]:
     return actions
 
 
+def ranger_fire_allowed(state: Snapshot, memory: ExplorationMemory) -> bool:
+    return (
+        not memory.core_full
+        and state.population < MAX_EXTERNAL_RECOVERY_POPULATION
+        and state.tick >= memory.ledger.combat_cooldown_until
+        and not memory.ledger.worker_damage_ticks
+    )
+
+
 def traffic_priority(worker: Unit, core: Position | None) -> tuple[int, str]:
     if worker.cargo > 0:
         return 0, worker.id
@@ -538,7 +575,7 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
 
     actions = {unit.id: {"type": "WAIT"} for unit in state.units if unit.unit_type not in {"WORKER", "RANGER"}}
     actions.update(vanguard_guard_actions(state))
-    actions.update(ranger_actions(state))
+    actions.update(ranger_actions(state, allow_fire=ranger_fire_allowed(state, memory)))
     workers = sorted(state.workers, key=lambda unit: unit.id)
     if not workers:
         core_action = {"type": "SPAWN", "unit_type": "WORKER"} if memory.can_spawn_worker(state) else None

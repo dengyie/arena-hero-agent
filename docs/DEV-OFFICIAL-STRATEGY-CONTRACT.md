@@ -169,6 +169,8 @@ Ranger: 仅已存在 Ranger；当前可见 UNIT/CORE、水平/垂直/45度、距
 
 人口/收益审计也必须完整：session 内若权威 population 增加且前一份本 Agent 已存储 plan 不是 `SPAWN`，则 `unattributed_population_increases` 累计并强制 `window_contaminated=true`。这是针对线上已观测的 population `19→21`、`Manual=0` 的跨 source/跨 session 增长；该类窗口不得用于战斗或经济收益结论。
 
+战斗 safety fuse：当前完整 state 可确认的己方 `UNIT_DAMAGED/ATTACK` → Ranger fire cooldown 12 Tick；己方 hp=0 或 `WORKER_CARGO_DROPPED` → 40 Tick cooldown。Ranger cooldown 内强制 WAIT；Vanguard仍只保留相邻本地防御 SWEEP。敌方受伤/死亡绝不写入己方风险账本。此门由线上真实 `SHOT_HIT` 同时伴随多个己方 Worker hp=0/cargo drop 驱动；先保护经济，再评估战斗收益。
+
 禁止：Ranger/Vanguard 自动生产、追击、历史敌方坐标、Beacon、Core migration、在 `CORE_FULL_EXTERNAL_CAP_HOLD` 下以战斗绕开人口管理。首次上线已验证协议/telemetry：新 session 16/16 HTTP 202，当前可见 1 名敌方 Unit，但没有已存在 Ranger且 Vanguard未相邻，故无攻击提交；尚无 `SWEEP_RESOLVED` 或 shot result，不能宣称战斗收益。
 
 ## 8. 当前实现与验证状态

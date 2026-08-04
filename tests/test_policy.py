@@ -12,7 +12,7 @@ from arena_agent.__main__ import (PermanentAuthError, allocator_metrics, operato
 from pathlib import Path
 from arena_agent.policy import (
     ExplorationMemory, MAX_BAND_RADIUS, MAX_ECONOMY_WORKERS, MAX_EXTERNAL_RECOVERY_POPULATION, PATH_NODE_CAP,
-    economy_plan, first_step, plan_path,
+    economy_plan, first_step, plan_path, ranger_fire_allowed,
 )
 from arena_agent.journal import Journal
 
@@ -837,6 +837,48 @@ class AgentTests(unittest.TestCase):
         p = economy_plan(fourth, mem)
         self.assertEqual(p.core_action, {"type": "SPAWN", "unit_type": "WORKER"})
         self.assertEqual(p.unit_actions["leader"], {"type": "MOVE", "direction": "UP"})
+
+    def test_friendly_combat_damage_and_cargo_drop_disable_ranger_fire(self):
+        mem = ExplorationMemory()
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        ranger = {"kind": "UNIT", "id": "ranger", "controlled": True,
+                  "position": [0, 0], "unit_type": "RANGER", "cargo": 0, "hp": 2}
+        worker = {"kind": "UNIT", "id": "worker", "controlled": True,
+                  "position": [1, 0], "unit_type": "WORKER", "cargo": 1, "hp": 2}
+        enemy = {"kind": "UNIT", "id": "enemy", "controlled": False,
+                 "position": [3, 0], "unit_type": "WORKER"}
+        hit = {"event_id": "friendly-hit", "event_type": "UNIT_DAMAGED", "reason_code": "ATTACK",
+               "target_id": "worker", "position": [1, 0], "values": {"damage": 1, "hp": 1}}
+        state = snapshot_from_state(10, {"status": "ACTIVE", "resources": 0, "population": 2,
+            "objects": [core, ranger, worker, enemy], "events": [hit]})
+        plan = economy_plan(state, mem)
+        self.assertFalse(ranger_fire_allowed(state, mem))
+        self.assertEqual(plan.unit_actions["ranger"], {"type": "WAIT"})
+        self.assertGreater(mem.ledger.combat_cooldown_until, 10)
+        death = {"event_id": "friendly-death", "event_type": "UNIT_DAMAGED", "reason_code": "ATTACK",
+                 "target_id": "worker", "position": [1, 0], "values": {"damage": 1, "hp": 0}}
+        dropped = {"event_id": "cargo", "event_type": "WORKER_CARGO_DROPPED", "actor_id": "worker",
+                   "position": [1, 0], "values": {"amount": 1}}
+        after = snapshot_from_state(11, {"status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [core, ranger, enemy], "events": [death, dropped]})
+        mem.apply_events(after)
+        self.assertGreaterEqual(mem.ledger.combat_cooldown_until, 11 + 40)
+        self.assertEqual(list(mem.ledger.combat_cargo_drops)[-1]["amount"], 1)
+
+    def test_enemy_combat_death_does_not_disable_ranger_fire(self):
+        mem = ExplorationMemory()
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        ranger = {"kind": "UNIT", "id": "ranger", "controlled": True,
+                  "position": [0, 0], "unit_type": "RANGER", "cargo": 0, "hp": 2}
+        enemy = {"kind": "UNIT", "id": "enemy", "controlled": False,
+                 "position": [3, 0], "unit_type": "WORKER"}
+        death = {"event_id": "enemy-death", "event_type": "UNIT_DAMAGED", "reason_code": "ATTACK",
+                 "target_id": "enemy", "position": [3, 0], "values": {"damage": 1, "hp": 0}}
+        state = snapshot_from_state(10, {"status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [core, ranger, enemy], "events": [death]})
+        plan = economy_plan(state, mem)
+        self.assertTrue(ranger_fire_allowed(state, mem))
+        self.assertEqual(plan.unit_actions["ranger"]["type"], "SHOOT")
 
     def test_ranger_shoots_only_current_visible_clear_legal_target(self):
         core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}

@@ -16,7 +16,7 @@ from .journal import Journal
 from .model import snapshot_from_state
 from .path import FRONTIER_PATH_NODE_CAP, MAX_FRONTIER_PATH_EVALUATIONS
 from .policy import (MAX_ECONOMY_WORKERS, MAX_EXTERNAL_RECOVERY_POPULATION,
-                     ExplorationMemory, economy_plan, step_position)
+                     ExplorationMemory, economy_plan, ranger_fire_allowed, step_position)
 
 LOG = logging.getLogger("arena_agent")
 WS_URL = "wss://api.arenahero.io/api/v1/game/ws"
@@ -379,6 +379,9 @@ async def run(args: argparse.Namespace) -> int:
                             },
                             "recent_events": list(memory.ledger.combat_events)[-12:],
                             "death_candidates": list(memory.ledger.combat_deaths)[-8:],
+                            "cargo_drops": list(memory.ledger.combat_cargo_drops)[-8:],
+                            "ranger_fire_allowed": ranger_fire_allowed(snapshot, memory),
+                            "cooldown_until": memory.ledger.combat_cooldown_until,
                         }
                         state_summary["last_event_types"] = plan.last_event_types
                         state_summary["stale_tick"] = bool(result.get("stale_tick"))
