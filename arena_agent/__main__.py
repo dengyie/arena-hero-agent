@@ -341,6 +341,26 @@ async def run(args: argparse.Namespace) -> int:
                             worker_id: action.get("type")
                             for worker_id, action in plan.unit_actions.items()
                         }
+                        state_summary["worker_trace"] = {
+                            worker.id: {
+                                "position": list(worker.position),
+                                "cargo": worker.cargo,
+                                "action": plan.unit_actions.get(worker.id, {}).get("type"),
+                                "intent_kind": plan.worker_intents.get(worker.id, (None, None))[1],
+                                "intent_target": (list(plan.worker_intents[worker.id][0])
+                                                  if worker.id in plan.worker_intents else None),
+                                "intent_distance": (
+                                    abs(worker.position[0] - plan.worker_intents[worker.id][0][0])
+                                    + abs(worker.position[1] - plan.worker_intents[worker.id][0][1])
+                                    if worker.id in plan.worker_intents else None
+                                ),
+                            }
+                            for worker in snapshot.workers
+                        }
+                        state_summary["unassigned_workers"] = sorted(
+                            worker.id for worker in snapshot.workers
+                            if worker.id not in plan.unit_actions
+                        )
                         state_summary["economy_metrics"] = {
                             "recent_deposits": len(memory.ledger.deposits),
                             "pending_harvests": len(memory.ledger.pending_harvests),

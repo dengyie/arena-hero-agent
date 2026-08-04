@@ -880,6 +880,22 @@ class AgentTests(unittest.TestCase):
         self.assertTrue(ranger_fire_allowed(state, mem))
         self.assertEqual(plan.unit_actions["ranger"]["type"], "SHOOT")
 
+    def test_every_current_worker_has_explicit_action_and_intent_trace(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        workers = [
+            {"kind": "UNIT", "id": "w-empty", "controlled": True,
+             "position": [4, 0], "unit_type": "WORKER", "cargo": 0},
+            {"kind": "UNIT", "id": "w-cargo", "controlled": True,
+             "position": [3, 0], "unit_type": "WORKER", "cargo": 1},
+        ]
+        state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 0, "population": 2,
+            "objects": [core, *workers], "events": []})
+        plan = economy_plan(state, ExplorationMemory())
+        self.assertEqual(set(plan.unit_actions), {"w-empty", "w-cargo"})
+        self.assertTrue(all(action["type"] in {"WAIT", "MOVE", "HARVEST", "DEPOSIT", "HEAL"}
+                            for action in plan.unit_actions.values()))
+        self.assertEqual(plan.worker_intents["w-cargo"], ((0, 0), "RETURN_CORE"))
+
     def test_ranger_shoots_only_current_visible_clear_legal_target(self):
         core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
         ranger = {"kind": "UNIT", "id": "ranger", "controlled": True,

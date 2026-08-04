@@ -536,6 +536,7 @@ class Plan:
     path_length: int = 0
     band_radius: int = 0
     assignments: int = 0
+    worker_intents: dict[str, tuple[Position, str]] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         output: dict[str, Any] = {"unit_actions": self.unit_actions}
@@ -611,12 +612,14 @@ def choose_core_defense_action(state: Snapshot, memory: ExplorationMemory) -> di
 
 def _plan(actions: dict[str, dict[str, Any]], memory: ExplorationMemory, *, policy_state: str,
           target: Position | None = None, waypoint: Position | None = None,
-          path: PathResult | None = None, core_action: dict[str, Any] | None = None) -> Plan:
+          path: PathResult | None = None, core_action: dict[str, Any] | None = None,
+          worker_intents: dict[str, tuple[Position, str]] | None = None) -> Plan:
     memory.policy_state = policy_state
     memory.last_path = path
     return Plan(actions, core_action, policy_state, target, waypoint, memory.last_event_types,
                 path.status if path else "NONE", path.explored_nodes if path else 0,
-                path.path_length if path else 0, memory.band_radius, len(memory.active_targets))
+                path.path_length if path else 0, memory.band_radius, len(memory.active_targets),
+                worker_intents or {})
 
 
 def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Plan:
@@ -768,6 +771,9 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
         core_action = choose_core_defense_action(state, memory)
     if core_action is None and memory.can_spawn_worker(state):
         core_action = {"type": "SPAWN", "unit_type": "WORKER"}
+    for worker in workers:
+        actions.setdefault(worker.id, {"type": "WAIT"})
+    worker_intents = {worker.id: (target, kind) for worker, target, kind in desired.values()}
     return _plan(actions, memory, policy_state=primary_state, target=primary_target,
                  waypoint=primary_target if primary_state == "EXPLORE" else None,
-                 path=primary_path, core_action=core_action)
+                 path=primary_path, core_action=core_action, worker_intents=worker_intents)
