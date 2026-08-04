@@ -2,16 +2,20 @@ import asyncio
 import unittest
 from unittest.mock import mock_open, patch
 from arena_agent.allocator import allocate_visible_resources
-from arena_agent.combat import intermediate_cells, ranger_line_distance, ranger_target
+from arena_agent.combat import (cell_shot_action, guard_slots, intermediate_cells,
+                                precision_shot_action, ranger_line_distance,
+                                ranger_target, select_ranger_decision,
+                                select_vanguard_decision)
 from arena_agent.model import Unit, snapshot_from_state
 from arena_agent.path import (FRONTIER_PATH_NODE_CAP, MAX_FRONTIER_PATH_EVALUATIONS,
-                              PathResult, plan_frontier_path)
+                              PathResult, plan_frontier_path, step_position)
 from arena_agent.__main__ import (PermanentAuthError, PhaseEvaluationMetrics, ResourceSupplyMetrics, allocator_metrics,
-                                  operator_attention_metrics, population_control_metrics, post_plan, record_population_transition,
+                                  combat_operator_attention, operator_attention_metrics, population_control_metrics, post_plan,
+                                  record_population_transition,
                                   record_received_source, record_session_baseline, stale_tick_reconnect_required)
 from pathlib import Path
 from arena_agent.policy import (
-    ExplorationMemory, MAX_BAND_RADIUS, MAX_ECONOMY_WORKERS, MAX_EXTERNAL_RECOVERY_POPULATION, PATH_NODE_CAP,
+    CombatMemory, ExplorationMemory, MAX_BAND_RADIUS, MAX_ECONOMY_WORKERS, MAX_EXTERNAL_RECOVERY_POPULATION, PATH_NODE_CAP,
     economy_plan, first_step, plan_path, ranger_fire_allowed,
 )
 from arena_agent.journal import Journal
@@ -38,6 +42,224 @@ class AgentTests(unittest.TestCase):
         self.assertIn(detour.direction, {"UP", "DOWN"})
         capped = plan_frontier_path((0, 0), (500, 0), frozenset(), set(), node_cap=4)
         self.assertEqual(capped.status, "NODE_CAP")
+
+    def test_v2_snapshot_enemy_fields_are_current_state_only(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        enemy = {"kind": "UNIT", "id": "enemy", "controlled": False,
+                 "position": [2, 0], "unit_type": "VANGUARD", "hp": 3}
+        first = snapshot_from_state(1, {"status": "ACTIVE", "resources": 0, "population": 0,
+            "objects": [core, enemy], "events": []})
+        self.assertEqual((first.visible_enemies[0].hp, first.visible_enemies[0].unit_type), (3, "VANGUARD"))
+        second = snapshot_from_state(2, {"status": "ACTIVE", "resources": 0, "population": 0,
+            "objects": [core], "events": []})
+        self.assertEqual(second.visible_enemies, ())
+
+    def test_v2_precision_and_cell_shot_payloads_are_strict(self):
+        self.assertEqual(precision_shot_action("enemy", (3, 3)), {
+            "type": "SHOOT", "target_id": "enemy", "expected_cell": [3, 3],
+        })
+        self.assertEqual(cell_shot_action((3, 3)), {
+            "type": "SHOOT", "expected_cell": [3, 3],
+        })
+        self.assertNotIn("target_id", cell_shot_action((3, 3)))
+
+    def test_v2_ranger_geometry_and_current_cell_decision(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        ranger = {"kind": "UNIT", "id": "ranger", "controlled": True,
+                  "position": [0, 0], "unit_type": "RANGER", "hp": 2}
+        enemy = {"kind": "UNIT", "id": "enemy", "controlled": False,
+                 "position": [3, 3], "unit_type": "WORKER", "hp": 2}
+        state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [core, ranger, enemy], "events": []})
+        decision = select_ranger_decision(state.rangers[0], state, protected_cells={(0, 0)})
+        self.assertEqual(decision.target_mode, "PRECISION_CURRENT")
+        self.assertEqual(decision.action, precision_shot_action("enemy", (3, 3)))
+        blocked = snapshot_from_state(2, {"status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [core, ranger, enemy, {"kind": "OBSTACLE", "positions": [[1, 1]]}], "events": []})
+        self.assertEqual(select_ranger_decision(blocked.rangers[0], blocked, protected_cells={(0, 0)}).action,
+                         {"type": "WAIT"})
+        self.assertIsNone(ranger_line_distance((0, 0), (2, 1)))
+
+    def test_v2_vanguard_scores_multi_hostile_sweep_cell(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        guard = {"kind": "UNIT", "id": "guard", "controlled": True,
+                 "position": [1, 1], "unit_type": "VANGUARD", "hp": 4}
+        enemies = [
+            {"kind": "UNIT", "id": "a", "controlled": False, "position": [1, 0], "unit_type": "WORKER"},
+            {"kind": "CORE", "id": "b", "controlled": False, "position": [1, 0]},
+            {"kind": "UNIT", "id": "c", "controlled": False, "position": [2, 1], "unit_type": "WORKER"},
+        ]
+        state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [core, guard, *enemies], "events": []})
+        decision = select_vanguard_decision(state.vanguards[0], state, protected_cells={(0, 0)})
+        self.assertEqual(decision.action, {"type": "SWEEP", "direction": "UP"})
+
+    def test_v2_guard_slots_are_deterministic_and_bounded(self):
+        slots = guard_slots((10, 10), frozenset({(12, 10)}))
+        self.assertEqual(slots, guard_slots((10, 10), frozenset({(12, 10)})))
+        self.assertTrue(slots)
+        self.assertTrue(all(2 <= abs(x - 10) + abs(y - 10) <= 4 for x, y in slots))
+        self.assertNotIn((12, 10), slots)
+
+    def test_v2_combat_roles_are_stable_and_forget_missing_units(self):
+        memory = CombatMemory()
+        units = (Unit("v2", (2, 0), "VANGUARD", 0, 4), Unit("v1", (3, 0), "VANGUARD", 0, 4),
+                 Unit("r1", (0, 2), "RANGER", 0, 2))
+        memory.reconcile_roles(units, tick=1)
+        self.assertEqual((memory.home_vanguard_id, memory.home_ranger_id), ("v1", "r1"))
+        memory.reconcile_roles((units[0],), tick=2)
+        self.assertEqual((memory.home_vanguard_id, memory.home_ranger_id), ("v2", None))
+        self.assertFalse(any("enemy" in name for name in vars(memory)))
+
+    def test_v2_spawn_transaction_confirms_only_new_matching_unit(self):
+        memory = CombatMemory()
+        before = (Unit("worker", (1, 0), "WORKER", 0, 2),)
+        memory.request_spawn("VANGUARD", 10, before)
+        memory.reconcile_roles(before, tick=11)
+        self.assertIsNotNone(memory.pending_spawn)
+        after = (*before, Unit("guard", (0, 0), "VANGUARD", 0, 4))
+        memory.reconcile_roles(after, tick=12)
+        self.assertIsNotNone(memory.pending_spawn)
+        self.assertIsNone(memory.home_vanguard_id)
+        memory.mark_spawn_accepted(10)
+        memory.reconcile_roles(after, tick=13)
+        self.assertIsNone(memory.pending_spawn)
+        self.assertEqual(memory.home_vanguard_id, "guard")
+        self.assertEqual(memory.last_spawn_result, "CONFIRMED")
+
+    def test_v2_combat_production_respects_reserve_population_and_guard(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True,
+                "position": [0, 0], "hp": 5, "shield": 5, "state": "NORMAL"}
+        workers = [{"kind": "UNIT", "id": f"w{i}", "controlled": True,
+                    "position": [i + 1, 0], "unit_type": "WORKER", "cargo": 0, "hp": 2}
+                   for i in range(17)]
+        mem = ExplorationMemory()
+        first = snapshot_from_state(1, {"status": "ACTIVE", "resources": 50, "population": 17,
+            "upkeep_next_tick": 0, "objects": [core, *workers], "events": []})
+        plan = economy_plan(first, mem, combat_mode="production", combat_production_guard=True)
+        self.assertEqual(plan.core_action, {"type": "SPAWN", "unit_type": "VANGUARD"})
+        blocked = economy_plan(first, ExplorationMemory(), combat_mode="production", combat_production_guard=False)
+        self.assertIsNone(blocked.core_action)
+        at_ceiling = snapshot_from_state(2, {"status": "ACTIVE", "resources": 100, "population": 19,
+            "upkeep_next_tick": 0, "objects": [core, *workers], "events": []})
+        self.assertIsNone(economy_plan(at_ceiling, ExplorationMemory(), combat_mode="production").core_action)
+        self.assertEqual(combat_operator_attention(at_ceiling, "production", True), {
+            "required": True, "reason": "combat_population_ceiling",
+        })
+        self.assertEqual(combat_operator_attention(first, "production", False), {
+            "required": True, "reason": "unattributed_population_increase",
+        })
+
+    def test_v2_positioning_shares_worker_reservations_and_recovers_injured_defender(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True,
+                "position": [0, 0], "hp": 5, "shield": 5, "state": "NORMAL"}
+        carrier = {"kind": "UNIT", "id": "carrier", "controlled": True,
+                   "position": [2, 0], "unit_type": "WORKER", "cargo": 1, "hp": 2}
+        guard = {"kind": "UNIT", "id": "guard", "controlled": True,
+                 "position": [2, 1], "unit_type": "VANGUARD", "hp": 3}
+        state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 10, "population": 2,
+            "upkeep_next_tick": 0, "objects": [core, carrier, guard], "events": []})
+        plan = economy_plan(state, ExplorationMemory(), combat_mode="positioning")
+        self.assertEqual(plan.unit_actions["carrier"], {"type": "MOVE", "direction": "LEFT"})
+        self.assertEqual(plan.combat_decisions["guard"]["state"], "RECOVER")
+        self.assertNotEqual(plan.unit_actions["guard"], {"type": "MOVE", "direction": "UP"})
+        worker_destination = (1, 0)
+        if plan.unit_actions["guard"].get("type") == "MOVE":
+            self.assertNotEqual(step_position((2, 1), plan.unit_actions["guard"]["direction"]), worker_destination)
+
+    def test_v2_worker_does_not_enter_current_defender_cell(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        worker = {"kind": "UNIT", "id": "worker", "controlled": True,
+                  "position": [0, 0], "unit_type": "WORKER", "cargo": 0, "hp": 2}
+        guard = {"kind": "UNIT", "id": "guard", "controlled": True,
+                 "position": [1, 0], "unit_type": "VANGUARD", "hp": 4}
+        resource = {"kind": "RESOURCE", "positions": [[2, 0]]}
+        state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 0, "population": 2,
+            "objects": [core, worker, guard, resource], "events": []})
+        plan = economy_plan(state, ExplorationMemory(), combat_mode="positioning")
+        self.assertNotEqual(plan.unit_actions["worker"], {"type": "MOVE", "direction": "RIGHT"})
+        current = economy_plan(state, ExplorationMemory(), combat_mode="current")
+        shadow = economy_plan(state, ExplorationMemory(), combat_mode="shadow")
+        self.assertEqual(shadow.as_dict(), current.as_dict())
+
+    def test_v2_shadow_records_decisions_without_changing_actions(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        guard = {"kind": "UNIT", "id": "guard", "controlled": True,
+                 "position": [4, 0], "unit_type": "VANGUARD", "hp": 4}
+        enemy = {"kind": "UNIT", "id": "enemy", "controlled": False,
+                 "position": [5, 0], "unit_type": "WORKER", "hp": 2}
+        state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [core, guard, enemy], "events": []})
+        current = economy_plan(state, ExplorationMemory(), combat_mode="current")
+        shadow = economy_plan(state, ExplorationMemory(), combat_mode="shadow")
+        self.assertEqual(shadow.unit_actions, current.unit_actions)
+        self.assertEqual(shadow.combat_decisions["guard"]["proposed_action"]["type"], "SWEEP")
+        self.assertTrue(shadow.combat_decisions["guard"]["shadow"])
+
+    def test_v2_live_cell_intercept_has_no_target_id(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        ranger = {"kind": "UNIT", "id": "ranger", "controlled": True,
+                  "position": [0, 0], "unit_type": "RANGER", "hp": 2}
+        enemy = {"kind": "UNIT", "id": "enemy", "controlled": False,
+                 "position": [2, 1], "unit_type": "WORKER", "hp": 2}
+        state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [core, ranger, enemy], "events": []})
+        plan = economy_plan(state, ExplorationMemory(), combat_mode="live")
+        self.assertEqual(plan.unit_actions["ranger"]["type"], "SHOOT")
+        self.assertNotIn("target_id", plan.unit_actions["ranger"])
+        self.assertEqual(plan.combat_decisions["ranger"]["target_mode"], "CELL_INTERCEPT")
+
+    def test_v2_ranger_loss_fuse_blocks_live_precision_and_intercept(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        ranger = {"kind": "UNIT", "id": "ranger", "controlled": True,
+                  "position": [0, 0], "unit_type": "RANGER", "hp": 2}
+        enemy = {"kind": "UNIT", "id": "enemy", "controlled": False,
+                 "position": [3, 0], "unit_type": "WORKER", "hp": 2}
+        mem = ExplorationMemory()
+        mem.ledger.combat_cooldown_until = 10
+        state = snapshot_from_state(5, {"status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [core, ranger, enemy], "events": []})
+        plan = economy_plan(state, mem, combat_mode="live")
+        self.assertNotEqual(plan.unit_actions["ranger"]["type"], "SHOOT")
+        self.assertEqual(plan.combat_decisions["ranger"]["reason"], "RANGER_FIRE_FUSED")
+
+    def test_v2_defenders_respond_only_to_current_core_zone_threat(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        guard = {"kind": "UNIT", "id": "guard", "controlled": True,
+                 "position": [-2, 0], "unit_type": "VANGUARD", "hp": 4}
+        enemy = {"kind": "UNIT", "id": "enemy", "controlled": False,
+                 "position": [4, 0], "unit_type": "WORKER", "hp": 2}
+        mem = ExplorationMemory()
+        first = snapshot_from_state(1, {"status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [core, guard, enemy], "events": []})
+        response = economy_plan(first, mem, combat_mode="live")
+        self.assertEqual(response.combat_decisions["guard"]["state"], "RESPOND")
+        self.assertEqual(response.unit_actions["guard"]["type"], "MOVE")
+        second = snapshot_from_state(2, {"status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [core, guard], "events": []})
+        fallback = economy_plan(second, mem, combat_mode="live")
+        self.assertNotEqual(fallback.combat_decisions["guard"]["state"], "RESPOND")
+        self.assertFalse(any("enemy" in name for name in vars(mem.combat)))
+
+    def test_v2_episode_attributes_only_accepted_shot_mode_once(self):
+        mem = ExplorationMemory()
+        mem.ledger.record_combat_submission("ranger", "CELL_INTERCEPT", 10)
+        mem.ledger.record_combat_submission("ranger", "CELL_INTERCEPT", 10)
+        state = snapshot_from_state(11, {"status": "ACTIVE", "resources": 0, "population": 0,
+            "objects": [], "events": [{"event_id": "miss", "event_type": "SHOT_MISSED",
+                                        "actor_id": "ranger", "values": {}}]})
+        mem.apply_events(state)
+        self.assertEqual(mem.ledger.combat_episode["cell_intercept_shots"], 1)
+        self.assertEqual(mem.ledger.combat_episode["precision_shots"], 0)
+        mem.apply_events(state)
+        self.assertEqual(mem.ledger.combat_episode["cell_intercept_shots"], 1)
+
+    def test_v2_delayed_shot_events_consume_submission_fifo(self):
+        ledger = ExplorationMemory().ledger
+        ledger.record_combat_submission("ranger", "PRECISION_CURRENT", 10)
+        ledger.record_combat_submission("ranger", "CELL_INTERCEPT", 11)
+        self.assertEqual(ledger.consume_combat_submission("ranger", 12), "PRECISION_CURRENT")
+        self.assertEqual(ledger.consume_combat_submission("ranger", 12), "CELL_INTERCEPT")
 
     def test_frontier_node_cap_uses_longer_bounded_retry_than_no_path(self):
         mem = ExplorationMemory()

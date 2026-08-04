@@ -23,6 +23,7 @@ class VisibleEnemy:
     position: Position
     kind: str
     unit_type: str | None = None
+    hp: int | None = None
 
 
 @dataclass(frozen=True)
@@ -84,15 +85,21 @@ def snapshot_from_state(tick: int, data: dict[str, Any]) -> Snapshot:
                 core_shield = int(obj["shield"]) if obj.get("shield") is not None else None
                 core_state = str(obj.get("state")) if obj.get("state") is not None else None
             elif "id" in obj and "position" in obj:
-                enemies.append(VisibleEnemy(str(obj["id"]), position(obj["position"]), "CORE"))
+                enemies.append(VisibleEnemy(
+                    str(obj["id"]), position(obj["position"]), "CORE", None,
+                    int(obj["hp"]) if obj.get("hp") is not None else None,
+                ))
         elif kind == "UNIT":
             if controlled:
                 units.append(Unit(str(obj["id"]), position(obj["position"]),
                                   str(obj["unit_type"]), int(obj.get("cargo", 0)),
                                   int(obj["hp"]) if obj.get("hp") is not None else None))
             elif "id" in obj and "position" in obj:
-                enemies.append(VisibleEnemy(str(obj["id"]), position(obj["position"]), "UNIT",
-                                            str(obj.get("unit_type", "UNKNOWN"))))
+                enemies.append(VisibleEnemy(
+                    str(obj["id"]), position(obj["position"]), "UNIT",
+                    str(obj.get("unit_type", "UNKNOWN")),
+                    int(obj["hp"]) if obj.get("hp") is not None else None,
+                ))
         elif kind == "RESOURCE":
             resources.update(position(x) for x in obj.get("positions", []))
         elif kind == "OBSTACLE":

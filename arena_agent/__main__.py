@@ -99,6 +99,17 @@ def operator_attention_metrics(snapshot: Any, policy_state: str) -> dict[str, An
     }
 
 
+def combat_operator_attention(snapshot: Any, combat_mode: str,
+                              combat_production_guard: bool) -> dict[str, Any]:
+    enabled = combat_mode not in {"current", "shadow"}
+    reason = None
+    if enabled and snapshot.population >= MAX_EXTERNAL_RECOVERY_POPULATION:
+        reason = "combat_population_ceiling"
+    elif enabled and not combat_production_guard:
+        reason = "unattributed_population_increase"
+    return {"required": reason is not None, "reason": reason}
+
+
 def allocator_metrics(snapshot, matched: int, total_cost: int) -> dict[str, Any]:
     eligible = sum(1 for worker in snapshot.workers
                    if worker.cargo <= 0 and (worker.hp is None or worker.hp > 1))
@@ -307,7 +318,7 @@ async def run(args: argparse.Namespace) -> int:
     if args.fixture:
         data = json.loads(open(args.fixture, encoding="utf-8").read())
         snapshot = snapshot_from_state(int(data["tick"]), data["state"])
-        plan = economy_plan(snapshot)
+        plan = economy_plan(snapshot, combat_mode=args.combat_mode)
         result = await post_plan("", snapshot.tick, plan.as_dict(), True)
         Journal(args.journal).write("fixture_plan", tick=snapshot.tick, plan=plan.as_dict(), result=result)
         return 0
@@ -341,7 +352,14 @@ async def run(args: argparse.Namespace) -> int:
     ticks = 0
     backoff = 0.5
     session_id = hashlib.sha256(f"{time.time_ns()}".encode()).hexdigest()[:12]
-    journal.write("session_start", session=session_id, dry_run=args.dry_run)
+    journal.write("session_start", session=session_id, dry_run=args.dry_run,
+                  combat_mode=args.combat_mode)
+
+    def end_session(reason: str, **fields: Any) -> None:
+        memory.ledger.finalize_combat_episode(reason)
+        journal.write("session_end", session=session_id, reason=reason,
+                      incomplete_combat_episodes=list(memory.ledger.completed_combat_episodes)[-1:],
+                      **fields)
     while args.max_ticks <= 0 or ticks < args.max_ticks:
         try:
             if hasattr(websockets, "connect"):
@@ -367,11 +385,24 @@ async def run(args: argparse.Namespace) -> int:
                         snapshot = snapshot_from_state(tick, msg["data"])
                         record_session_baseline(source_audit, snapshot)
                         record_population_transition(source_audit, snapshot, source_audit["last_agent_core_action"])
-                        plan = economy_plan(snapshot, memory)
+                        combat_production_guard = source_audit["unattributed_population_increases"] == 0
+                        plan = economy_plan(
+                            snapshot, memory, combat_mode=args.combat_mode,
+                            combat_production_guard=combat_production_guard,
+                        )
                         result = await post_plan(token, tick, plan.as_dict(), args.dry_run, cookie, csrf)
                         stale_tick_streak, should_reconnect = stale_tick_reconnect_required(stale_tick_streak, result)
                         if result.get("status") == 202:
                             source_audit["last_agent_core_action"] = (plan.core_action or {}).get("type")
+                            if ((plan.core_action or {}).get("type") == "SPAWN"
+                                    and (plan.core_action or {}).get("unit_type") in {"VANGUARD", "RANGER"}):
+                                memory.combat.mark_spawn_accepted(tick)
+                            for actor_id, action in plan.unit_actions.items():
+                                if action.get("type") != "SHOOT":
+                                    continue
+                                mode = plan.combat_decisions.get(actor_id, {}).get("target_mode")
+                                if mode in {"PRECISION_CURRENT", "CELL_INTERCEPT"}:
+                                    memory.ledger.record_combat_submission(actor_id, mode, tick)
                         if should_reconnect:
                             reconnect_reason = "stale_tick_streak"
                         raw_state = msg["data"]
@@ -532,6 +563,24 @@ async def run(args: argparse.Namespace) -> int:
                             },
                         }
                         state_summary["combat"] = {
+                            "mode": args.combat_mode,
+                            "decisions": plan.combat_decisions,
+                            "roles": {
+                                "home_vanguard_id": memory.combat.home_vanguard_id,
+                                "home_ranger_id": memory.combat.home_ranger_id,
+                            },
+                            "production_transaction": ({
+                                "unit_type": memory.combat.pending_spawn.unit_type,
+                                "requested_tick": memory.combat.pending_spawn.requested_tick,
+                                "accepted_tick": memory.combat.pending_spawn.accepted_tick,
+                                "status": memory.combat.last_spawn_result,
+                            } if memory.combat.pending_spawn is not None else {
+                                "status": memory.combat.last_spawn_result,
+                            }),
+                            "production_guard": combat_production_guard,
+                            "operator_attention": combat_operator_attention(
+                                snapshot, args.combat_mode, combat_production_guard
+                            ),
                             "visible_enemies": len(snapshot.visible_enemies),
                             "visible_enemy_types": {
                                 kind: sum(1 for enemy in snapshot.visible_enemies if enemy.kind == kind)
@@ -562,6 +611,7 @@ async def run(args: argparse.Namespace) -> int:
                             break
                         ticks += 1
                         if args.max_ticks > 0 and ticks >= args.max_ticks:
+                            end_session("max_ticks")
                             return 0
                     elif kind == "received":
                         received = record_received_source(source_audit, msg.get("data"))
@@ -576,17 +626,18 @@ async def run(args: argparse.Namespace) -> int:
                     await asyncio.sleep(0.5)
                     continue
                 if saw_message:
-                    journal.write("session_end", session=session_id, reason="ws_closed")
+                    end_session("ws_closed")
                     return 43
         except KeyboardInterrupt:
+            end_session("keyboard_interrupt")
             return 0
         except PermanentAuthError as exc:
-            journal.write("session_end", session=session_id, reason="permanent_auth", error=str(exc))
+            end_session("permanent_auth", error=str(exc))
             return 42
         except Exception as exc:
             text = repr(exc)
             if "status_code=401" in text or "status_code=403" in text or "Unauthorized" in text or "Forbidden" in text:
-                journal.write("session_end", session=session_id, reason="ws_auth", error=text)
+                end_session("ws_auth", error=text)
                 return 42
             journal.write("connection_error", session=session_id, error=text, backoff=backoff)
             if args.max_ticks > 0 and ticks >= args.max_ticks:
@@ -602,6 +653,9 @@ def main() -> int:
     p.add_argument("--max-ticks", type=int, default=0)
     p.add_argument("--journal", default=os.environ.get("ARENA_HERO_JOURNAL", "./runtime/arena-agent.jsonl"))
     p.add_argument("--fixture", help="build one dry-run plan from a local JSON state fixture")
+    p.add_argument("--combat-mode", choices=("current", "shadow", "production", "positioning",
+                                              "live-sweep", "live-precision", "live-cell", "live"),
+                   default=os.environ.get("ARENA_HERO_COMBAT_MODE", "current"))
     args = p.parse_args()
     args.dry_run = not args.live or args.dry_run
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")

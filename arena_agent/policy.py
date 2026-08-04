@@ -5,7 +5,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .allocator import allocate_visible_resources
-from .combat import ranger_actions
+from .combat import (guard_slots, ranger_actions, ranger_firing_cells, select_ranger_decision,
+                     select_vanguard_decision)
 from .model import Position, Snapshot, Unit
 from .path import (DIRECTIONS, FRONTIER_PATH_NODE_CAP, MAX_FRONTIER_PATH_EVALUATIONS,
                    PathResult, first_step, plan_frontier_path, plan_path, step_position)
@@ -44,6 +45,90 @@ FRONTIER_COMPLETION_COOLDOWN_TICKS = 16
 MAX_FALLBACK_FRONTIER_CANDIDATES = 8
 THREAT_RADIUS = 3
 CORE_GUARD_RADIUS = 3
+COMBAT_RESERVE = 20
+COMBAT_SPAWN_COOLDOWN = 4
+COMBAT_SPAWN_TIMEOUT = 4
+COMBAT_PRODUCTION_MODES = {"production", "positioning", "live-sweep", "live-precision", "live-cell", "live"}
+COMBAT_MOVEMENT_MODES = {"positioning", "live-sweep", "live-precision", "live-cell", "live"}
+
+
+@dataclass
+class PendingCombatSpawn:
+    unit_type: str
+    requested_tick: int
+    prior_ids: frozenset[str]
+    accepted_tick: int | None = None
+
+
+@dataclass
+class CombatMemory:
+    home_vanguard_id: str | None = None
+    home_ranger_id: str | None = None
+    pending_spawn: PendingCombatSpawn | None = None
+    spawn_cooldown_until: int = 0
+    last_spawn_result: str | None = None
+    last_role_transition: str | None = None
+
+    def request_spawn(self, unit_type: str, tick: int, units: tuple[Unit, ...]) -> None:
+        self.pending_spawn = PendingCombatSpawn(
+            unit_type, tick, frozenset(unit.id for unit in units if unit.unit_type == unit_type)
+        )
+        self.last_spawn_result = "REQUESTED"
+
+    def mark_spawn_failed(self, tick: int) -> None:
+        self.pending_spawn = None
+        self.spawn_cooldown_until = max(self.spawn_cooldown_until, tick + COMBAT_SPAWN_COOLDOWN)
+        self.last_spawn_result = "FAILED"
+
+    def mark_spawn_accepted(self, tick: int) -> None:
+        if self.pending_spawn is not None and self.pending_spawn.requested_tick == tick:
+            self.pending_spawn.accepted_tick = tick
+            self.last_spawn_result = "ACCEPTED"
+
+    def reconcile_roles(self, units: tuple[Unit, ...], tick: int) -> None:
+        by_type = {
+            unit_type: sorted((unit for unit in units if unit.unit_type == unit_type), key=lambda unit: unit.id)
+            for unit_type in ("VANGUARD", "RANGER")
+        }
+        ids = {unit.id for unit in units}
+        if self.home_vanguard_id not in ids:
+            self.home_vanguard_id = None
+        if self.home_ranger_id not in ids:
+            self.home_ranger_id = None
+        if self.pending_spawn is not None:
+            candidates = [unit for unit in by_type[self.pending_spawn.unit_type]
+                          if unit.id not in self.pending_spawn.prior_ids]
+            if candidates and self.pending_spawn.accepted_tick is not None:
+                selected = candidates[0].id
+                if self.pending_spawn.unit_type == "VANGUARD":
+                    self.home_vanguard_id = selected
+                else:
+                    self.home_ranger_id = selected
+                self.last_spawn_result = "CONFIRMED"
+                self.last_role_transition = f"{self.pending_spawn.unit_type}:{selected}"
+                self.pending_spawn = None
+            elif tick - self.pending_spawn.requested_tick >= COMBAT_SPAWN_TIMEOUT:
+                self.mark_spawn_failed(tick)
+        pending_type = self.pending_spawn.unit_type if self.pending_spawn is not None else None
+        if self.home_vanguard_id is None and by_type["VANGUARD"] and pending_type != "VANGUARD":
+            self.home_vanguard_id = by_type["VANGUARD"][0].id
+        if self.home_ranger_id is None and by_type["RANGER"] and pending_type != "RANGER":
+            self.home_ranger_id = by_type["RANGER"][0].id
+
+    def choose_spawn(self, state: Snapshot, *, production_guard: bool, core_full: bool,
+                     core_occupied: bool) -> str | None:
+        if (not production_guard or core_full or core_occupied or self.pending_spawn is not None
+                or state.tick < self.spawn_cooldown_until or state.core_position is None
+                or state.core_state not in {None, "NORMAL"} or state.population >= MAX_EXTERNAL_RECOVERY_POPULATION
+                or state.upkeep_next_tick not in {None, 0}):
+            return None
+        missing = "VANGUARD" if self.home_vanguard_id is None else (
+            "RANGER" if self.home_ranger_id is None else None
+        )
+        if missing is None:
+            return None
+        cost = 10 if missing == "VANGUARD" else 12
+        return missing if state.resources - cost >= COMBAT_RESERVE else None
 
 @dataclass
 class ResourceObservation:
@@ -72,6 +157,7 @@ class EventLedger:
     pending_friendly_deaths: dict[str, int] = field(default_factory=dict)
     combat_episode: dict[str, int] | None = None
     completed_combat_episodes: deque[dict[str, int]] = field(default_factory=deque)
+    pending_combat_submissions: dict[tuple[str, int], str] = field(default_factory=dict)
 
     def accept(self, event: dict[str, Any]) -> bool:
         event_id = str(event.get("event_id", ""))
@@ -115,6 +201,8 @@ class EventLedger:
                 "outgoing_damage": 0, "incoming_damage": 0,
                 "friendly_deaths": 0, "enemy_destruction_participations": 0,
                 "friendly_cargo_lost": 0,
+                "precision_shots": 0, "cell_intercept_shots": 0,
+                "harvests": 0, "deposits": 0,
             }
         self.combat_episode["last_tick"] = tick
         return self.combat_episode
@@ -129,6 +217,35 @@ class EventLedger:
             self.completed_combat_episodes.popleft()
         self.combat_episode = None
 
+    def finalize_combat_episode(self, reason: str) -> None:
+        if self.combat_episode is None:
+            return
+        episode: dict[str, Any] = dict(self.combat_episode)
+        episode["end_tick"] = episode["last_tick"]
+        episode["outcome"] = "INCOMPLETE"
+        episode["close_reason"] = reason
+        self.completed_combat_episodes.append(episode)
+        while len(self.completed_combat_episodes) > 32:
+            self.completed_combat_episodes.popleft()
+        self.combat_episode = None
+
+    def record_combat_submission(self, actor_id: str, target_mode: str, tick: int) -> None:
+        self.pending_combat_submissions[(actor_id, tick)] = target_mode
+        while len(self.pending_combat_submissions) > 64:
+            self.pending_combat_submissions.pop(next(iter(self.pending_combat_submissions)))
+
+    def consume_combat_submission(self, actor_id: str, tick: int) -> str | None:
+        candidates = sorted(
+            (submitted_tick, mode)
+            for (submitted_actor, submitted_tick), mode in self.pending_combat_submissions.items()
+            if submitted_actor == actor_id and submitted_tick <= tick
+        )
+        if not candidates:
+            return None
+        submitted_tick, mode = candidates[0]
+        self.pending_combat_submissions.pop((actor_id, submitted_tick), None)
+        return mode
+
     def trim(self, tick: int) -> None:
         self.combat_close_if_idle(tick)
         while self.deposits and self.deposits[0] < tick - SPAWN_WINDOW_TICKS:
@@ -142,6 +259,10 @@ class EventLedger:
         self.pending_harvests = {
             worker_id: harvested_tick for worker_id, harvested_tick in self.pending_harvests.items()
             if harvested_tick >= tick - RISK_WINDOW_TICKS
+        }
+        self.pending_combat_submissions = {
+            key: mode for key, mode in self.pending_combat_submissions.items()
+            if key[1] >= tick - RISK_WINDOW_TICKS
         }
 
 
@@ -223,6 +344,7 @@ class ExplorationMemory:
     frontier_arrival_wait_ticks: int = 0
     frontier_completion_transitions: set[str] = field(default_factory=set)
     safe_retreat_workers: set[str] = field(default_factory=set)
+    combat: CombatMemory = field(default_factory=CombatMemory)
 
     def _reset_for_core(self, state: Snapshot) -> None:
         self.route_core = state.core_position
@@ -244,6 +366,7 @@ class ExplorationMemory:
         self.allocation_count = 0
         self.allocation_total_cost = 0
         self.traffic = TrafficMemory()
+        self.combat = CombatMemory()
 
     def observe(self, state: Snapshot) -> None:
         core_changed = self.route_core is not None and (
@@ -272,6 +395,7 @@ class ExplorationMemory:
         self.ledger.trim(state.tick)
         self.traffic.trim(state.tick)
 
+
     def apply_events(self, state: Snapshot) -> None:
         self.last_event_types = tuple(str(event.get("event_type")) for event in state.events)
         current_controlled_ids = {unit.id for unit in state.units}
@@ -293,6 +417,8 @@ class ExplorationMemory:
             if kind == "HARVEST_SUCCEEDED" and pos is not None:
                 self.resources.setdefault(pos, ResourceObservation(0)).status = "depleted"
                 self.ledger.record_harvest(actor_id, state.tick)
+                if self.ledger.combat_episode is not None:
+                    self.ledger.combat_episode["harvests"] += 1
             elif kind == "HARVEST_FAILED" and pos is not None:
                 obs = self.resources.setdefault(pos, ResourceObservation(0))
                 obs.status = "failed"
@@ -302,11 +428,20 @@ class ExplorationMemory:
                 self.core_full = event.get("reason_code") == "CORE_RESOURCE_FULL"
             elif kind == "CORE_SPAWN_FAILED":
                 self.recovery_cooldown_until = max(self.recovery_cooldown_until, state.tick + CAPACITY_RECOVERY_COOLDOWN)
+                if self.combat.pending_spawn is not None:
+                    self.combat.mark_spawn_failed(state.tick)
+            elif kind == "CORE_SPAWN_SUCCEEDED":
+                values = event.get("values", {})
+                if (self.combat.pending_spawn is not None
+                        and values.get("unit_type") == self.combat.pending_spawn.unit_type):
+                    self.combat.last_spawn_result = "RESOLVED"
             elif kind == "DEPOSIT_SUCCEEDED":
                 self.core_full = False
                 self.ledger.record_deposit(state.tick)
                 self.ledger.record_deposit_latency(actor_id, state.tick)
                 self.active_targets.pop(actor_id, None)
+                if self.ledger.combat_episode is not None:
+                    self.ledger.combat_episode["deposits"] += 1
             elif kind == "UNIT_MOVE_FAILED" and pos is not None:
                 reason = str(event.get("reason_code", "UNKNOWN"))
                 self.traffic.mark_failure(actor_id, pos, reason, state.tick)
@@ -324,8 +459,18 @@ class ExplorationMemory:
                 elif kind == "SHOT_HIT":
                     episode["shots_hit"] += 1
                     episode["outgoing_damage"] += damage
+                    mode = self.ledger.consume_combat_submission(actor_id, state.tick)
+                    if mode == "PRECISION_CURRENT":
+                        episode["precision_shots"] += 1
+                    elif mode == "CELL_INTERCEPT":
+                        episode["cell_intercept_shots"] += 1
                 elif kind == "SHOT_MISSED":
                     episode["shots_missed"] += 1
+                    mode = self.ledger.consume_combat_submission(actor_id, state.tick)
+                    if mode == "PRECISION_CURRENT":
+                        episode["precision_shots"] += 1
+                    elif mode == "CELL_INTERCEPT":
+                        episode["cell_intercept_shots"] += 1
                 elif kind == "DESTRUCTION_PARTICIPATION":
                     episode["enemy_destruction_participations"] += 1
                 self.ledger.combat_events.append({
@@ -397,6 +542,7 @@ class ExplorationMemory:
                 self.active_targets.clear()
                 self.core_full = False
         self.ledger.controlled_unit_ids = current_controlled_ids
+        self.combat.reconcile_roles(state.units, state.tick)
 
     def _trim(self) -> None:
         while len(self.completed_targets) > MAX_COMPLETED_TARGETS:
@@ -618,6 +764,7 @@ class Plan:
     band_radius: int = 0
     assignments: int = 0
     worker_intents: dict[str, tuple[Position, str]] = field(default_factory=dict)
+    combat_decisions: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         output: dict[str, Any] = {"unit_actions": self.unit_actions}
@@ -730,16 +877,153 @@ def choose_core_defense_action(state: Snapshot, memory: ExplorationMemory) -> di
 def _plan(actions: dict[str, dict[str, Any]], memory: ExplorationMemory, *, policy_state: str,
           target: Position | None = None, waypoint: Position | None = None,
           path: PathResult | None = None, core_action: dict[str, Any] | None = None,
-          worker_intents: dict[str, tuple[Position, str]] | None = None) -> Plan:
+          worker_intents: dict[str, tuple[Position, str]] | None = None,
+          combat_decisions: dict[str, dict[str, Any]] | None = None) -> Plan:
     memory.policy_state = policy_state
     memory.last_path = path
-    return Plan(actions, core_action, policy_state, target, waypoint, memory.last_event_types,
-                path.status if path else "NONE", path.explored_nodes if path else 0,
-                path.path_length if path else 0, memory.band_radius, len(memory.active_targets),
-                worker_intents or {})
+    return Plan(
+        unit_actions=actions,
+        core_action=core_action,
+        policy_state=policy_state,
+        active_target=target,
+        waypoint=waypoint,
+        last_event_types=memory.last_event_types,
+        path_status=path.status if path else "NONE",
+        path_nodes=path.explored_nodes if path else 0,
+        path_length=path.path_length if path else 0,
+        band_radius=memory.band_radius,
+        assignments=len(memory.active_targets),
+        worker_intents=worker_intents or {},
+        combat_decisions=combat_decisions or {},
+    )
 
 
-def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Plan:
+def _combat_proposals(state: Snapshot, memory: ExplorationMemory,
+                      combat_mode: str) -> dict[str, dict[str, Any]]:
+    protected = {state.core_position} if state.core_position is not None else set()
+    protected.update(worker.position for worker in state.workers if worker.cargo > 0 or (worker.hp or 2) <= 1)
+    proposals: dict[str, dict[str, Any]] = {}
+    for unit in (*state.vanguards, *state.rangers):
+        if unit.id not in {memory.combat.home_vanguard_id, memory.combat.home_ranger_id}:
+            continue
+        decision = (select_vanguard_decision(unit, state, protected_cells=protected)
+                    if unit.unit_type == "VANGUARD" else
+                    select_ranger_decision(unit, state, protected_cells=protected,
+                                           allow_cell_intercept=combat_mode in {"shadow", "live-cell", "live"}))
+        action_type = decision.action.get("type")
+        attack_enabled = (
+            action_type == "SWEEP" and combat_mode in {"shadow", "live-sweep", "live-precision", "live-cell", "live"}
+            or action_type == "SHOOT" and decision.target_mode == "PRECISION_CURRENT"
+            and combat_mode in {"shadow", "live-precision", "live-cell", "live"}
+            or action_type == "SHOOT" and decision.target_mode == "CELL_INTERCEPT"
+            and combat_mode in {"shadow", "live-cell", "live"}
+        )
+        if action_type in {"SWEEP", "SHOOT"} and not attack_enabled:
+            decision = type(decision)({"type": "WAIT"}, target_id=decision.target_id,
+                                      target_position=decision.target_position,
+                                      target_mode=decision.target_mode, reason="ATTACK_STAGE_DISABLED")
+        if unit.unit_type == "RANGER" and not ranger_fire_allowed(
+                state, memory, threatened_worker_ids=threatened_workers(state)):
+            decision = type(decision)({"type": "WAIT"}, reason="RANGER_FIRE_FUSED")
+        proposals[unit.id] = {
+            "role": "HOME_VANGUARD" if unit.unit_type == "VANGUARD" else "HOME_RANGER",
+            "state": "ATTACK" if decision.action.get("type") in {"SWEEP", "SHOOT"} else "HOLD",
+            "target_mode": decision.target_mode,
+            "candidate_cell": list(decision.target_position) if decision.target_position else None,
+            "reason": decision.reason,
+            "proposed_action": decision.action,
+            "shadow": False,
+        }
+    return proposals
+
+
+def _apply_defender_movement(state: Snapshot, memory: ExplorationMemory,
+                             actions: dict[str, dict[str, Any]],
+                             proposals: dict[str, dict[str, Any]],
+                             reserved_destinations: set[Position],
+                             reserved_edges: set[tuple[Position, Position]],
+                             obstacles: frozenset[Position]) -> None:
+    slots = guard_slots(state.core_position, obstacles) if state.core_position is not None else ()
+    assigned_slots: set[Position] = set()
+    positions = {unit.id: unit.position for unit in state.units}
+    defenders = [unit for unit in state.units
+                 if unit.id in {memory.combat.home_vanguard_id, memory.combat.home_ranger_id}]
+    core = state.core_position
+    current_threats = [
+        enemy for enemy in state.visible_enemies
+        if core is not None and manhattan(enemy.position, core) <= CORE_GUARD_RADIUS + 1
+    ]
+    threat_core = core if core is not None else (0, 0)
+    for unit in sorted(defenders, key=lambda item: item.id):
+        proposal = proposals.setdefault(unit.id, {
+            "role": unit.unit_type, "state": "HOLD", "target_mode": None,
+            "candidate_cell": None, "reason": "NO_PROPOSAL",
+            "proposed_action": {"type": "WAIT"}, "shadow": False,
+        })
+        max_hp = 4 if unit.unit_type == "VANGUARD" else 2
+        target: Position | None = None
+        if unit.hp is not None and unit.hp < max_hp and state.core_position is not None:
+            proposal["state"] = "RECOVER"
+            proposal["reason"] = "INJURED_DEFENDER"
+            if unit.position == state.core_position:
+                proposal["proposed_action"] = {"type": "HEAL"}
+                actions[unit.id] = {"type": "HEAL"}
+                continue
+            target = state.core_position
+        elif proposal["proposed_action"].get("type") in {"SWEEP", "SHOOT"}:
+            actions[unit.id] = proposal["proposed_action"]
+            continue
+        elif current_threats:
+            threat = min(current_threats, key=lambda enemy: (
+                manhattan(enemy.position, threat_core), enemy.id
+            ))
+            candidates = (list(ranger_firing_cells(threat.position, obstacles))
+                          if unit.unit_type == "RANGER" else [
+                              step_position(threat.position, direction) for direction in DIRECTIONS
+                              if step_position(threat.position, direction) not in obstacles
+                          ])
+            target = min(candidates, key=lambda cell: (manhattan(unit.position, cell), cell), default=None)
+            proposal["state"] = "RESPOND"
+            proposal["movement_reason"] = "CURRENT_CORE_ZONE_THREAT"
+            proposal["candidate_cell"] = list(target) if target is not None else None
+            if target is None:
+                actions[unit.id] = {"type": "WAIT"}
+                proposal["state"] = "BLOCKED"
+                proposal["movement_reason"] = "NO_RESPONSE_CELL"
+                continue
+        else:
+            target = next((slot for slot in slots if slot not in assigned_slots), None)
+            if target is not None:
+                assigned_slots.add(target)
+            if target is None or unit.position == target:
+                actions[unit.id] = {"type": "WAIT"}
+                proposal["state"] = "HOLD"
+                continue
+            proposal["state"] = "ASSEMBLE"
+            proposal["candidate_cell"] = list(target)
+
+        occupied = set(positions.values()) - {unit.position}
+        move = choose_traffic_move(unit, target, state, obstacles, occupied,
+                                   reserved_destinations, reserved_edges, memory)
+        if move.direction is None:
+            actions[unit.id] = {"type": "WAIT"}
+            proposal["state"] = "BLOCKED"
+            proposal["reason"] = move.status
+            memory.traffic.holds[unit.id] = move.status
+            continue
+        destination = step_position(unit.position, move.direction)
+        actions[unit.id] = {"type": "MOVE", "direction": move.direction}
+        proposal["proposed_action"] = actions[unit.id]
+        proposal["path_status"] = move.status
+        proposal["path_length"] = move.path_length
+        proposal["path_nodes"] = move.explored_nodes
+        reserved_destinations.add(destination)
+        reserved_edges.add((unit.position, destination))
+        memory.traffic.mark_planned_move(unit.id, unit.position, move.direction)
+
+
+def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None, *,
+                 combat_mode: str = "current", combat_production_guard: bool = True) -> Plan:
     memory = memory or ExplorationMemory()
     memory.observe(state)
     memory.apply_events(state)
@@ -762,13 +1046,39 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
         allow_fire=ranger_fire_allowed(state, memory, threatened_worker_ids=threatened_worker_ids),
         allowed_ranger_ids=core_local_ranger_ids(state),
     ))
+    combat_decisions = _combat_proposals(state, memory, combat_mode) if combat_mode != "current" else {}
+    if combat_mode == "shadow":
+        for decision in combat_decisions.values():
+            decision["shadow"] = True
     workers = sorted(state.workers, key=lambda unit: unit.id)
     if not workers:
-        core_action = {"type": "SPAWN", "unit_type": "WORKER"} if memory.can_spawn_worker(state) else None
-        return _plan(actions, memory, policy_state="SPAWN_BOOT" if core_action else "WAIT_NO_WORKER", core_action=core_action)
+        obstacles = frozenset(memory.permanent_obstacles | set(state.obstacle_cells))
+        if combat_mode in COMBAT_MOVEMENT_MODES:
+            if combat_mode == "positioning":
+                for decision in combat_decisions.values():
+                    if decision["proposed_action"].get("type") in {"SWEEP", "SHOOT"}:
+                        decision["proposed_action"] = {"type": "WAIT"}
+                        decision["reason"] = "ATTACKS_DISABLED"
+            _apply_defender_movement(state, memory, actions, combat_decisions, set(), set(), obstacles)
+        core_action = None
+        if combat_mode in COMBAT_PRODUCTION_MODES:
+            combat_spawn = memory.combat.choose_spawn(
+                state, production_guard=combat_production_guard, core_full=memory.core_full,
+                core_occupied=any(unit.position == state.core_position for unit in state.units),
+            )
+            if combat_spawn is not None:
+                core_action = {"type": "SPAWN", "unit_type": combat_spawn}
+                memory.combat.request_spawn(combat_spawn, state.tick, state.units)
+        if core_action is None and memory.can_spawn_worker(state):
+            core_action = {"type": "SPAWN", "unit_type": "WORKER"}
+        return _plan(actions, memory, policy_state="SPAWN_BOOT" if core_action else "WAIT_NO_WORKER",
+                     core_action=core_action, combat_decisions=combat_decisions)
 
     obstacles = frozenset(memory.permanent_obstacles | set(state.obstacle_cells))
-    positions = {worker.id: worker.position for worker in workers}
+    positions = {
+        unit.id: unit.position
+        for unit in (state.units if combat_mode in COMBAT_MOVEMENT_MODES else state.workers)
+    }
     reserved_destinations: set[Position] = set()
     reserved_edges: set[tuple[Position, Position]] = set()
     desired: dict[str, tuple[Unit, Position, str]] = {}
@@ -907,8 +1217,25 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
         elif primary_target is None:
             primary_state, primary_target, primary_path = "EXPLORE", target, path
 
+    if combat_mode in COMBAT_MOVEMENT_MODES:
+        if combat_mode == "positioning":
+            for decision in combat_decisions.values():
+                if decision["proposed_action"].get("type") in {"SWEEP", "SHOOT"}:
+                    decision["proposed_action"] = {"type": "WAIT"}
+                    decision["reason"] = "ATTACKS_DISABLED"
+        _apply_defender_movement(state, memory, actions, combat_decisions,
+                                 reserved_destinations, reserved_edges, obstacles)
+
     if core_action is None:
         core_action = choose_core_defense_action(state, memory)
+    if core_action is None and combat_mode in COMBAT_PRODUCTION_MODES:
+        combat_spawn = memory.combat.choose_spawn(
+            state, production_guard=combat_production_guard, core_full=memory.core_full,
+            core_occupied=any(unit.position == state.core_position for unit in state.units),
+        )
+        if combat_spawn is not None:
+            core_action = {"type": "SPAWN", "unit_type": combat_spawn}
+            memory.combat.request_spawn(combat_spawn, state.tick, state.units)
     if core_action is None and memory.can_spawn_worker(state):
         core_action = {"type": "SPAWN", "unit_type": "WORKER"}
     for worker in workers:
@@ -916,4 +1243,5 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
     worker_intents = {worker.id: (target, kind) for worker, target, kind in desired.values()}
     return _plan(actions, memory, policy_state=primary_state, target=primary_target,
                  waypoint=primary_target if primary_state == "EXPLORE" else None,
-                 path=primary_path, core_action=core_action, worker_intents=worker_intents)
+                 path=primary_path, core_action=core_action, worker_intents=worker_intents,
+                 combat_decisions=combat_decisions)

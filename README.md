@@ -11,7 +11,8 @@ This first version implements a safe Worker economy loop:
 - replace state snapshots instead of merging them;
 - move Workers to visible resource cells;
 - harvest, return to Core, and deposit cargo;
-- leave combat and Beacon actions at WAIT;
+- current combat remains defensive-only: existing Vanguard/Ranger actions are
+  gated by current private state, with no Beacon or pursuit policy;
 - journal state, plan, receipts, and resolution events;
 - support dry-run by default and live mode only with `--live`.
 
@@ -50,3 +51,12 @@ It refuses live startup unless `ARENA_HERO_TOKEN` is already present in the prot
 ## Policy
 
 The agent submits a complete plan once per state, with an idempotency key per tick. HTTP 202 means stored, not successful; actual results are read from the next state's events. A manual plan remains higher priority on the server.
+
+## Combat status
+
+The current verified implementation contains conservative Core-local Vanguard
+SWEEP/Ranger precision-fire gates, combat episode accounting, and friendly-loss
+cooldowns. It does not yet produce combat units or run a complete defensive
+squad. The design for that next milestone is in
+`docs/DEV-COMBAT-SYSTEM-V2.md`; implementation and live behavior remain behind
+an explicit approval and staged event-level acceptance.

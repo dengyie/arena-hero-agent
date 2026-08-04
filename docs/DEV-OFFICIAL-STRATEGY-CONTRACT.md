@@ -74,7 +74,7 @@ final Agent/Manual plan lock
 |---|---|---|
 | Worker | MOVE, HARVEST, DEPOSIT, HEAL, Beacon, SELF_DESTRUCT, WAIT | MOVE/HARVEST/DEPOSIT/HEAL/WAIT；不 Beacon/self-destruct |
 | Vanguard | MOVE, SWEEP, HEAL, Beacon, SELF_DESTRUCT, WAIT | 当前可见且正交相邻敌方时 SWEEP，否则 WAIT |
-| Ranger | MOVE, SHOOT, HEAL, Beacon, SELF_DESTRUCT, WAIT | 禁用 |
+| Ranger | MOVE, SHOOT, HEAL, Beacon, SELF_DESTRUCT, WAIT | 仅当前可见、Core-local、合法几何；V2 cell-fire 设计中 |
 
 - Worker HARVEST 需要空 cargo 且站在当前 resource cell；自然资源得 1，Beacon owner 得 2。
 - 同一 resource 多 Worker 竞争由最低 UUID 获胜，内部策略必须先唯一认领，不能把官方 tie-break 当调度方案。
@@ -149,7 +149,7 @@ permanent obstacles
 - Ranger SHOOT 仅对当前 state 可见 target 才具有效益；resolution 要求 target 仍在 expected cell、敌对、同直线/45-degree、距离 1-3、无中间 obstacle。动态失败统一 `SHOT_MISSED`。
 - combat 使用不可变快照并同步伤害；不以先后手、最后一击或历史目标推断。
 
-当前仅启用可见相邻 Vanguard SWEEP；没有真实 `SWEEP_RESOLVED`/伤害闭环前，不启用 Vanguard pursuit、Ranger、攻击性生产或 Beacon。
+当前仅启用可见相邻 Vanguard SWEEP 与 Core-local Ranger precision-fire gate；没有真实 combat event 闭环前，不启用 Vanguard pursuit、战斗生产或 Beacon。完整防守小队与 v0.13 target-free cell fire 设计见 `docs/DEV-COMBAT-SYSTEM-V2.md`，尚未授权实现。
 
 ### Beacon、Core move
 

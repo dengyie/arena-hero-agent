@@ -1,5 +1,9 @@
 # DEV：Arena Phase A/B — Clean Evaluation 与经济保护防守层
 
+> 当前战斗系统的下一阶段设计契约为 `docs/DEV-COMBAT-SYSTEM-V2.md`。
+> 本文的 Phase A/B 只覆盖 clean attribution、当前视野防守和损失熔断，
+> 不代表已经完成战斗单位生产、家园编队或 v0.13 cell-fire。
+
 - 状态：**已上线；safe-retreat ingress fairness 已真实验收；clean evaluation/Phase C 受外部 over-cap baseline阻塞**
 - 日期：2026-08-04
 - 前置：`DEV-OFFICIAL-STRATEGY-CONTRACT.md`、`DEV-FRONTIER-LIVENESS-RECOVERY.md`
