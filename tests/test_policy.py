@@ -139,7 +139,7 @@ class AgentTests(unittest.TestCase):
         metrics.observe(deposited, economy_plan(deposited, mem), eligible=False)
         self.assertEqual(metrics.as_dict(), {
             "clean_ticks": 3, "starved_ticks": 2, "visible_resource_ticks": 1,
-            "discovery_transitions": 1, "harvests": 1, "deposits": 0,
+            "initial_visible_resources": 0, "discovery_transitions": 1, "harvests": 1, "deposits": 0,
             "action_counts": {"HARVEST": 1, "MOVE": 2},
             "intent_counts": {"EXPLORE": 2, "RESOURCE": 1},
         })

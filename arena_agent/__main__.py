@@ -119,6 +119,7 @@ class ResourceSupplyMetrics:
         self.clean_ticks = 0
         self.starved_ticks = 0
         self.visible_resource_ticks = 0
+        self.initial_visible_resources: int | None = None
         self.discovery_transitions = 0
         self.harvests = 0
         self.deposits = 0
@@ -132,6 +133,8 @@ class ResourceSupplyMetrics:
             self._prior_visible_resources = None
             return
         self.clean_ticks += 1
+        if self.initial_visible_resources is None:
+            self.initial_visible_resources = visible
         if visible:
             self.visible_resource_ticks += 1
         elif snapshot.workers:
@@ -155,6 +158,7 @@ class ResourceSupplyMetrics:
             "clean_ticks": self.clean_ticks,
             "starved_ticks": self.starved_ticks,
             "visible_resource_ticks": self.visible_resource_ticks,
+            "initial_visible_resources": self.initial_visible_resources,
             "discovery_transitions": self.discovery_transitions,
             "harvests": self.harvests,
             "deposits": self.deposits,
