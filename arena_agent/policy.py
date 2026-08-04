@@ -42,6 +42,8 @@ MAX_DYNAMIC_EDGES = 512
 MAX_DYNAMIC_CELLS = 256
 FRONTIER_COMPLETION_COOLDOWN_TICKS = 16
 MAX_FALLBACK_FRONTIER_CANDIDATES = 8
+THREAT_RADIUS = 3
+CORE_GUARD_RADIUS = 3
 
 @dataclass
 class ResourceObservation:
@@ -606,9 +608,35 @@ class Plan:
         return output
 
 
-def vanguard_guard_actions(state: Snapshot) -> dict[str, dict[str, Any]]:
+def manhattan(left: Position, right: Position) -> int:
+    return abs(left[0] - right[0]) + abs(left[1] - right[1])
+
+
+def threatened_workers(state: Snapshot) -> set[str]:
+    return {
+        worker.id for worker in state.workers
+        if any(manhattan(worker.position, enemy.position) <= THREAT_RADIUS for enemy in state.visible_enemies)
+    }
+
+
+def core_threatened(state: Snapshot) -> bool:
+    return state.core_position is not None and any(
+        manhattan(state.core_position, enemy.position) <= CORE_GUARD_RADIUS
+        for enemy in state.visible_enemies
+    )
+
+
+def defender_in_core_guard(position: Position, core: Position | None) -> bool:
+    return core is not None and manhattan(position, core) <= CORE_GUARD_RADIUS
+
+
+def vanguard_guard_actions(state: Snapshot, *, threatened_worker_ids: set[str]) -> dict[str, dict[str, Any]]:
     actions: dict[str, dict[str, Any]] = {}
+    economy_risk = bool(threatened_worker_ids) or core_threatened(state)
     for vanguard in state.vanguards:
+        if not economy_risk or not defender_in_core_guard(vanguard.position, state.core_position):
+            actions[vanguard.id] = {"type": "WAIT"}
+            continue
         adjacent = [enemy for enemy in state.visible_enemies
                     if abs(enemy.position[0] - vanguard.position[0]) + abs(enemy.position[1] - vanguard.position[1]) == 1]
         if not adjacent:
@@ -621,13 +649,23 @@ def vanguard_guard_actions(state: Snapshot) -> dict[str, dict[str, Any]]:
     return actions
 
 
-def ranger_fire_allowed(state: Snapshot, memory: ExplorationMemory) -> bool:
+def ranger_fire_allowed(state: Snapshot, memory: ExplorationMemory, *, threatened_worker_ids: set[str] | None = None) -> bool:
+    threatened_worker_ids = threatened_worker_ids or set()
+    if any(worker.id in threatened_worker_ids and worker.cargo > 0 for worker in state.workers):
+        return False
     return (
         not memory.core_full
         and state.population < MAX_EXTERNAL_RECOVERY_POPULATION
         and state.tick >= memory.ledger.combat_cooldown_until
         and not memory.ledger.worker_damage_ticks
     )
+
+
+def core_local_ranger_ids(state: Snapshot) -> set[str]:
+    return {
+        ranger.id for ranger in state.rangers
+        if defender_in_core_guard(ranger.position, state.core_position)
+    }
 
 
 def traffic_priority(worker: Unit, core: Position | None) -> tuple[int, str]:
@@ -693,9 +731,14 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
     if state.status != "ACTIVE":
         return _plan({}, memory, policy_state="PAUSE")
 
+    threatened_worker_ids = threatened_workers(state)
     actions = {unit.id: {"type": "WAIT"} for unit in state.units if unit.unit_type not in {"WORKER", "RANGER"}}
-    actions.update(vanguard_guard_actions(state))
-    actions.update(ranger_actions(state, allow_fire=ranger_fire_allowed(state, memory)))
+    actions.update(vanguard_guard_actions(state, threatened_worker_ids=threatened_worker_ids))
+    actions.update(ranger_actions(
+        state,
+        allow_fire=ranger_fire_allowed(state, memory, threatened_worker_ids=threatened_worker_ids),
+        allowed_ranger_ids=core_local_ranger_ids(state),
+    ))
     workers = sorted(state.workers, key=lambda unit: unit.id)
     if not workers:
         core_action = {"type": "SPAWN", "unit_type": "WORKER"} if memory.can_spawn_worker(state) else None
@@ -757,6 +800,10 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
         if worker.id in desired or worker.hp is None or worker.hp > 1 or state.core_position is None:
             continue
         desired[worker.id] = (worker, state.core_position, "RETURN_HEAL")
+    for worker in workers:
+        if worker.id in desired or worker.id not in threatened_worker_ids or state.core_position is None:
+            continue
+        desired[worker.id] = (worker, state.core_position, "RETURN_SAFE")
     empty = [w for w in workers if w.id not in desired]
     eligible_resources = [worker for worker in empty if worker.hp is None or worker.hp > 1]
     resource_assignments = allocate_visible_resources(
@@ -809,6 +856,10 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
             elif kind == "RESOURCE":
                 actions[worker.id] = {"type": "HARVEST"}
                 primary_state, primary_target = "HARVEST", target
+            elif kind == "RETURN_SAFE":
+                actions[worker.id] = {"type": "WAIT"}
+                memory.traffic.holds[worker.id] = "RETURN_SAFE_AT_CORE"
+                primary_state, primary_target = "RETURN_SAFE", target
             continue
         occupied = set(positions.values()) - {worker.position}
         path = choose_traffic_move(worker, target, state, obstacles, occupied,

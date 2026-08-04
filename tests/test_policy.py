@@ -6,7 +6,7 @@ from arena_agent.combat import intermediate_cells, ranger_line_distance, ranger_
 from arena_agent.model import Unit, snapshot_from_state
 from arena_agent.path import (FRONTIER_PATH_NODE_CAP, MAX_FRONTIER_PATH_EVALUATIONS,
                               PathResult, plan_frontier_path)
-from arena_agent.__main__ import (PermanentAuthError, ResourceSupplyMetrics, allocator_metrics,
+from arena_agent.__main__ import (PermanentAuthError, PhaseEvaluationMetrics, ResourceSupplyMetrics, allocator_metrics,
                                   operator_attention_metrics, population_control_metrics, post_plan, record_population_transition,
                                   record_received_source, record_session_baseline, stale_tick_reconnect_required)
 from pathlib import Path
@@ -970,6 +970,95 @@ class AgentTests(unittest.TestCase):
         self.assertTrue(all(action["type"] in {"WAIT", "MOVE", "HARVEST", "DEPOSIT", "HEAL"}
                             for action in plan.unit_actions.values()))
         self.assertEqual(plan.worker_intents["w-cargo"], ((0, 0), "RETURN_CORE"))
+
+    def test_threatened_empty_worker_returns_safe_but_carrying_priority_and_ranger_protection_hold(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        enemy = {"kind": "UNIT", "id": "enemy", "controlled": False, "position": [3, 0], "unit_type": "WORKER"}
+        empty = {"kind": "UNIT", "id": "empty", "controlled": True, "position": [2, 0], "unit_type": "WORKER", "cargo": 0}
+        carrying = {"kind": "UNIT", "id": "carrying", "controlled": True, "position": [2, 1], "unit_type": "WORKER", "cargo": 1}
+        resource = {"kind": "RESOURCE", "positions": [[2, 0]]}
+        state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 5, "population": 2,
+            "objects": [core, empty, carrying, enemy, resource], "events": []})
+        plan = economy_plan(state, ExplorationMemory())
+        self.assertEqual(plan.worker_intents["empty"], ((0, 0), "RETURN_SAFE"))
+        self.assertEqual(plan.worker_intents["carrying"], ((0, 0), "RETURN_CORE"))
+        self.assertEqual(plan.unit_actions["empty"]["type"], "MOVE")
+        self.assertEqual(plan.unit_actions["carrying"]["type"], "MOVE")
+
+    def test_phase_evaluation_attributes_fallback_once_and_excludes_contamination(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        worker = {"kind": "UNIT", "id": "worker", "controlled": True, "position": [1, 0], "unit_type": "WORKER", "cargo": 0}
+        mem = ExplorationMemory()
+        metrics = PhaseEvaluationMetrics()
+        first = snapshot_from_state(1, {"status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [core, worker], "events": []})
+        first_plan = economy_plan(first, mem)
+        mem.frontier_selection_sources["worker"] = "fallback"
+        metrics.observe(first, first_plan, mem, eligible=True)
+        harvested = snapshot_from_state(2, {"status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [core, {**worker, "cargo": 1}],
+                        "events": [{"event_id": "h", "event_type": "HARVEST_SUCCEEDED", "actor_id": "worker", "position": [1, 0]}]})
+        harvested_plan = economy_plan(harvested, mem)
+        metrics.observe(harvested, harvested_plan, mem, eligible=True)
+        self.assertEqual(metrics.as_dict()["fallback_pending"], 1)
+        self.assertEqual(metrics.as_dict()["fallback_outcomes"], {})
+        deposited = snapshot_from_state(3, {"status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [core, {**worker, "cargo": 0}],
+            "events": [{"event_id": "d", "event_type": "DEPOSIT_SUCCEEDED", "actor_id": "worker", "position": [0, 0]}]})
+        deposited_plan = economy_plan(deposited, mem)
+        metrics.observe(deposited, deposited_plan, mem, eligible=True)
+        self.assertEqual(metrics.as_dict()["fallback_outcomes"], {"DEPOSIT_AFTER_FALLBACK": 1})
+        pending = snapshot_from_state(4, {"status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [core, {**worker, "cargo": 0}], "events": []})
+        pending_plan = economy_plan(pending, mem)
+        mem.frontier_selection_sources["worker"] = "fallback"
+        metrics.observe(pending, pending_plan, mem, eligible=True)
+        metrics.observe(pending, pending_plan, mem, eligible=False)
+        self.assertEqual(metrics.as_dict()["fallback_outcomes"]["ABORTED_CONTAMINATED"], 1)
+
+    def test_defense_restricts_vanguard_and_ranger_to_core_local_economy_protection(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        vanguard = {"kind": "UNIT", "id": "vanguard", "controlled": True,
+                    "position": [10, 0], "unit_type": "VANGUARD", "cargo": 0}
+        ranger = {"kind": "UNIT", "id": "ranger", "controlled": True,
+                  "position": [10, 1], "unit_type": "RANGER", "cargo": 0}
+        enemy = {"kind": "UNIT", "id": "enemy", "controlled": False,
+                 "position": [11, 0], "unit_type": "WORKER"}
+        distant = snapshot_from_state(1, {"status": "ACTIVE", "resources": 0, "population": 2,
+            "objects": [core, vanguard, ranger, enemy], "events": []})
+        plan = economy_plan(distant, ExplorationMemory())
+        self.assertEqual(plan.unit_actions["vanguard"], {"type": "WAIT"})
+        self.assertEqual(plan.unit_actions["ranger"], {"type": "WAIT"})
+        carrier = {"kind": "UNIT", "id": "carrier", "controlled": True,
+                   "position": [2, 0], "unit_type": "WORKER", "cargo": 1}
+        local_ranger = {"kind": "UNIT", "id": "local-ranger", "controlled": True,
+                        "position": [0, 1], "unit_type": "RANGER", "cargo": 0}
+        threat = {"kind": "UNIT", "id": "threat", "controlled": False,
+                  "position": [3, 0], "unit_type": "WORKER"}
+        protected = snapshot_from_state(2, {"status": "ACTIVE", "resources": 0, "population": 2,
+            "objects": [core, carrier, local_ranger, threat], "events": []})
+        plan = economy_plan(protected, ExplorationMemory())
+        self.assertEqual(plan.worker_intents["carrier"], ((0, 0), "RETURN_CORE"))
+        self.assertEqual(plan.unit_actions["local-ranger"], {"type": "WAIT"})
+
+    def test_phase_evaluation_marks_contaminated_closed_combat_episode_excluded(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        worker = {"kind": "UNIT", "id": "worker", "controlled": True,
+                  "position": [1, 0], "unit_type": "WORKER", "cargo": 0}
+        mem = ExplorationMemory()
+        metrics = PhaseEvaluationMetrics()
+        hit = {"event_id": "hit", "event_type": "SHOT_HIT", "actor_id": "ranger", "target_id": "enemy",
+               "values": {"damage": 1}}
+        active = snapshot_from_state(1, {"status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [core, worker], "events": [hit]})
+        metrics.observe(active, economy_plan(active, mem), mem, eligible=True)
+        contaminated = snapshot_from_state(2, {"status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [core, worker], "events": []})
+        metrics.observe(contaminated, economy_plan(contaminated, mem), mem, eligible=False)
+        closed = snapshot_from_state(10, {"status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [core, worker], "events": []})
+        metrics.observe(closed, economy_plan(closed, mem), mem, eligible=True)
+        self.assertEqual(metrics.as_dict()["clean_combat_episodes"][-1]["outcome"], "EXCLUDED_CONTAMINATED")
 
     def test_ranger_shoots_only_current_visible_clear_legal_target(self):
         core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}

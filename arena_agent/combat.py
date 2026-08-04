@@ -51,10 +51,14 @@ def ranger_target(ranger_position: Position, enemies: Iterable[VisibleEnemy],
     return min(candidates)[-1] if candidates else None
 
 
-def ranger_actions(state, *, allow_fire: bool) -> dict[str, dict[str, object]]:
+def ranger_actions(state, *, allow_fire: bool, allowed_ranger_ids: set[str] | None = None) -> dict[str, dict[str, object]]:
     actions: dict[str, dict[str, object]] = {}
+    allowed_ranger_ids = allowed_ranger_ids or set()
     for ranger in state.rangers:
-        target = ranger_target(ranger.position, state.visible_enemies, state.obstacle_cells) if allow_fire else None
+        target = (
+            ranger_target(ranger.position, state.visible_enemies, state.obstacle_cells)
+            if allow_fire and ranger.id in allowed_ranger_ids else None
+        )
         actions[ranger.id] = (
             {"type": "SHOOT", "target_id": target.id, "expected_cell": list(target.position)}
             if target is not None else {"type": "WAIT"}

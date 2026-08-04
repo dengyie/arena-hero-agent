@@ -16,7 +16,8 @@ from .journal import Journal
 from .model import snapshot_from_state
 from .path import FRONTIER_PATH_NODE_CAP, MAX_FRONTIER_PATH_EVALUATIONS
 from .policy import (MAX_ECONOMY_WORKERS, MAX_EXTERNAL_RECOVERY_POPULATION,
-                     ExplorationMemory, economy_plan, ranger_fire_allowed, step_position)
+                     ExplorationMemory, economy_plan, ranger_fire_allowed, step_position,
+                     threatened_workers, core_threatened)
 
 LOG = logging.getLogger("arena_agent")
 WS_URL = "wss://api.arenahero.io/api/v1/game/ws"
@@ -167,6 +168,71 @@ class ResourceSupplyMetrics:
         }
 
 
+class PhaseEvaluationMetrics:
+    """Clean-window attribution for fallback and closed combat episodes only."""
+
+    FALLBACK_WINDOW_TICKS = 24
+
+    def __init__(self) -> None:
+        self.fallback_pending: dict[str, dict[str, int]] = {}
+        self.fallback_outcomes: dict[str, int] = {}
+        self.combat_episodes: list[dict[str, Any]] = []
+        self._completed_episode_count = 0
+        self._combat_episode_contaminated = False
+
+    def _close_fallback(self, worker_id: str, outcome: str) -> None:
+        if self.fallback_pending.pop(worker_id, None) is not None:
+            self.fallback_outcomes[outcome] = self.fallback_outcomes.get(outcome, 0) + 1
+
+    def observe(self, snapshot: Any, plan: Any, memory: ExplorationMemory, *, eligible: bool) -> None:
+        if not eligible:
+            for worker_id in list(self.fallback_pending):
+                self._close_fallback(worker_id, "ABORTED_CONTAMINATED")
+            if memory.ledger.combat_episode is not None:
+                self._combat_episode_contaminated = True
+            return
+        for worker_id, source in memory.frontier_selection_sources.items():
+            if source == "fallback":
+                self._close_fallback(worker_id, "REPLACED_BY_NEW_FALLBACK")
+                self.fallback_pending[worker_id] = {
+                    "tick": snapshot.tick, "path_length": plan.path_length, "harvested_tick": -1,
+                }
+        for event in snapshot.events:
+            actor_id = str(event.get("actor_id", ""))
+            if event.get("event_type") == "HARVEST_SUCCEEDED":
+                if actor_id in self.fallback_pending:
+                    self.fallback_pending[actor_id]["harvested_tick"] = snapshot.tick
+            elif event.get("event_type") == "DEPOSIT_SUCCEEDED":
+                self._close_fallback(actor_id, "DEPOSIT_AFTER_FALLBACK")
+        for worker_id, item in list(self.fallback_pending.items()):
+            if snapshot.tick - item["tick"] >= self.FALLBACK_WINDOW_TICKS:
+                self._close_fallback(
+                    worker_id,
+                    "HARVEST_AFTER_FALLBACK" if item["harvested_tick"] >= 0 else "EXPIRED_NO_RESOLUTION",
+                )
+        while self._completed_episode_count < len(memory.ledger.completed_combat_episodes):
+            episode = dict(memory.ledger.completed_combat_episodes[self._completed_episode_count])
+            episode["outcome"] = (
+                "EXCLUDED_CONTAMINATED" if self._combat_episode_contaminated else "CLEAN_COMPLETE"
+            )
+            self.combat_episodes.append(episode)
+            self._completed_episode_count += 1
+            self._combat_episode_contaminated = False
+
+    def as_dict(self) -> dict[str, Any]:
+        assigned = sum(self.fallback_outcomes.values()) + len(self.fallback_pending)
+        harvest = self.fallback_outcomes.get("HARVEST_AFTER_FALLBACK", 0)
+        deposit = self.fallback_outcomes.get("DEPOSIT_AFTER_FALLBACK", 0)
+        return {
+            "fallback_assigned": assigned,
+            "fallback_pending": len(self.fallback_pending),
+            "fallback_outcomes": dict(sorted(self.fallback_outcomes.items())),
+            "fallback_harvest_rate": (harvest / assigned) if assigned else None,
+            "fallback_deposit_rate": (deposit / assigned) if assigned else None,
+            "clean_combat_episodes": list(self.combat_episodes)[-8:],
+        }
+
+
 async def post_plan(token: str, tick: int, plan: dict[str, Any], dry_run: bool, cookie: str = "", csrf: str = "") -> dict[str, Any]:
     body = {"tick": tick, **plan}
     if dry_run:
@@ -257,6 +323,7 @@ async def run(args: argparse.Namespace) -> int:
     journal = Journal(args.journal)
     memory = ExplorationMemory()
     resource_supply = ResourceSupplyMetrics()
+    phase_evaluation = PhaseEvaluationMetrics()
     source_audit = {"manual_interventions": 0, "external_core_actions": 0,
                     "window_contaminated": False, "last_received": None,
                     "baseline_recorded": False, "baseline_contaminated": False,
@@ -310,6 +377,7 @@ async def run(args: argparse.Namespace) -> int:
                         raw_state = msg["data"]
                         metrics_eligible = not source_audit["window_contaminated"] and not result.get("stale_tick")
                         resource_supply.observe(snapshot, plan, eligible=metrics_eligible)
+                        phase_evaluation.observe(snapshot, plan, memory, eligible=metrics_eligible)
                         state_summary = {
                             "status": raw_state.get("status"),
                             "resources": raw_state.get("resources"),
@@ -372,6 +440,7 @@ async def run(args: argparse.Namespace) -> int:
                         state_summary["population_control"] = population_control_metrics(snapshot)
                         state_summary["metric_window_eligible"] = metrics_eligible
                         state_summary["resource_supply"] = resource_supply.as_dict()
+                        state_summary["phase_evaluation"] = phase_evaluation.as_dict()
                         state_summary["operator_attention"] = operator_attention_metrics(snapshot, plan.policy_state)
                         state_summary["policy_state"] = plan.policy_state
                         state_summary["active_target"] = plan.active_target
@@ -447,6 +516,19 @@ async def run(args: argparse.Namespace) -> int:
                             "dynamic_edges": len(memory.traffic.blocked_edges),
                             "dynamic_cells": len(memory.traffic.blocked_cells),
                             "repeated_failures": max(memory.traffic.repeated_failures.values(), default=0),
+                        }
+                        current_threatened_workers = threatened_workers(snapshot)
+                        state_summary["defense"] = {
+                            "threatened_workers": sorted(current_threatened_workers),
+                            "core_threatened": core_threatened(snapshot),
+                            "worker_defense_reasons": {
+                                worker.id: (
+                                    "CARRYING_THREAT" if worker.cargo > 0 else
+                                    "INJURED_THREAT" if worker.hp is not None and worker.hp <= 1 else
+                                    "RETURN_SAFE" if plan.worker_intents.get(worker.id, (None, None))[1] == "RETURN_SAFE" else None
+                                )
+                                for worker in snapshot.workers if worker.id in current_threatened_workers
+                            },
                         }
                         state_summary["combat"] = {
                             "visible_enemies": len(snapshot.visible_enemies),
