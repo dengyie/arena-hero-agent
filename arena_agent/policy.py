@@ -40,6 +40,8 @@ MAX_CORE_HP = 5
 MAX_CORE_SHIELD = 5
 MAX_DYNAMIC_EDGES = 512
 MAX_DYNAMIC_CELLS = 256
+FRONTIER_COMPLETION_COOLDOWN_TICKS = 16
+MAX_FALLBACK_FRONTIER_CANDIDATES = 8
 
 @dataclass
 class ResourceObservation:
@@ -185,6 +187,7 @@ class ExplorationMemory:
     band_radius: int = INITIAL_BAND_RADIUS
     frontier_candidates: deque[Position] = field(default_factory=deque)
     completed_targets: dict[Position, int] = field(default_factory=dict)
+    completion_cooldowns: dict[Position, int] = field(default_factory=dict)
     failed_targets: dict[Position, tuple[int, int]] = field(default_factory=dict)
     frontier_failure_reasons: dict[str, int] = field(default_factory=dict)
     frontier_path_evaluations: int = 0
@@ -201,6 +204,11 @@ class ExplorationMemory:
     allocation_count: int = 0
     allocation_total_cost: int = 0
     last_path: PathResult | None = None
+    frontier_selection_sources: dict[str, str] = field(default_factory=dict)
+    frontier_no_candidate_reasons: dict[str, int] = field(default_factory=dict)
+    frontier_fallback_assignments: int = 0
+    frontier_arrival_wait_ticks: int = 0
+    frontier_completion_transitions: set[str] = field(default_factory=set)
 
     def _reset_for_core(self, state: Snapshot) -> None:
         self.route_core = state.core_position
@@ -208,6 +216,7 @@ class ExplorationMemory:
         self.band_radius = INITIAL_BAND_RADIUS
         self.frontier_candidates.clear()
         self.completed_targets.clear()
+        self.completion_cooldowns.clear()
         self.failed_targets.clear()
         self.frontier_failure_reasons.clear()
         self.frontier_path_evaluations = 0
@@ -236,6 +245,10 @@ class ExplorationMemory:
         for pos, observation in self.resources.items():
             if state.tick - observation.last_seen_tick >= RESOURCE_TTL_TICKS and pos not in state.resource_cells:
                 observation.status = "stale"
+        self.completion_cooldowns = {
+            target: until for target, until in self.completion_cooldowns.items()
+            if until > state.tick
+        }
         self.ledger.trim(state.tick)
         self.traffic.trim(state.tick)
 
@@ -404,6 +417,8 @@ class ExplorationMemory:
         self.frontier_path_evaluations = 0
         self.frontier_path_nodes = 0
         self.frontier_worker_evaluations.clear()
+        self.frontier_selection_sources.clear()
+        self.frontier_completion_transitions.clear()
 
     def frontier_path(self, worker_id: str, start: Position, target: Position, obstacles: frozenset[Position],
                       occupied: set[Position]) -> PathResult:
@@ -430,27 +445,39 @@ class ExplorationMemory:
                     or max(abs(target[0] - state.core_position[0]), abs(target[1] - state.core_position[1])) <= max_radius)
 
         active = self.active_targets.get(worker.id)
-        if active is not None and within_budget(active) and active not in reserved and active not in self.failed_targets:
+        if active == worker.position:
+            self.complete_frontier_if_reached(worker, state.tick)
+            active = None
+        if (active is not None and within_budget(active) and active not in reserved
+                and active not in self.failed_targets and active not in self.completion_cooldowns):
             result = self.frontier_path(worker.id, worker.position, active, obstacles, occupied)
-            if result.status in {"FOUND", "START_AT_GOAL"}:
+            if result.status == "FOUND":
+                self.frontier_selection_sources[worker.id] = "active"
                 return active, result
             if result.status == "FRONTIER_BUDGET":
-                return active, result
+                self.frontier_selection_sources[worker.id] = "budget_deferred"
+                self.frontier_no_candidate_reasons["FRONTIER_BUDGET_DEFERRED"] = (
+                    self.frontier_no_candidate_reasons.get("FRONTIER_BUDGET_DEFERRED", 0) + 1
+                )
+                return None, result
             self.active_targets.pop(worker.id, None)
+        budget_deferred = False
         candidates = list(self.frontier_candidates)
         self.frontier_candidates.clear()
         best: tuple[tuple[int, int, int, int, int], Position, PathResult] | None = None
         for target in candidates:
             failures, retry_after = self.failed_targets.get(target, (0, 0))
             if (not within_budget(target) or target in reserved or retry_after > state.tick
-                    or target in obstacles or target in occupied):
+                    or target in obstacles or target in occupied or target in self.completion_cooldowns
+                    or target == worker.position):
                 self.frontier_candidates.append(target)
                 continue
             result = self.frontier_path(worker.id, worker.position, target, obstacles, occupied)
             if result.status == "FRONTIER_BUDGET":
+                budget_deferred = True
                 self.frontier_candidates.appendleft(target)
                 break
-            if result.status not in {"FOUND", "START_AT_GOAL"}:
+            if result.status != "FOUND":
                 self.failed_targets[target] = (failures + 1, self.frontier_retry_after(result.status, failures, state.tick))
                 self.frontier_failure_reasons[result.status] = (
                     self.frontier_failure_reasons.get(result.status, 0) + 1
@@ -463,43 +490,77 @@ class ExplorationMemory:
                 best = (score, target, result)
             else:
                 self.frontier_candidates.append(target)
-        if best is None:
+        force_refill_selected = False
+        if best is None and not budget_deferred:
             self._refill_frontier(state, force=True)
-            for target in list(self.frontier_candidates):
-                if not within_budget(target) or target in reserved or target in obstacles or target in occupied:
+            for target in list(self.frontier_candidates)[:MAX_FALLBACK_FRONTIER_CANDIDATES]:
+                failures, retry_after = self.failed_targets.get(target, (0, 0))
+                if (not within_budget(target) or target in reserved or retry_after > state.tick
+                        or target in obstacles or target in occupied or target in self.completion_cooldowns
+                        or target == worker.position):
                     continue
                 result = self.frontier_path(worker.id, worker.position, target, obstacles, occupied)
                 if result.status == "FRONTIER_BUDGET":
+                    budget_deferred = True
                     break
-                if result.status in {"FOUND", "START_AT_GOAL"}:
-                    score = (0 if target not in self.completed_targets else 1, result.path_length,
-                             target[0], target[1])
-                    if best is None or score < best[0]:
-                        best = (score, target, result)
-        if best is None and max_radius is not None and state.core_position is not None:
-            for target in self._build_band(state.core_position, max_radius):
-                if target in reserved or target in obstacles or target in occupied:
+                if result.status != "FOUND":
+                    self.failed_targets[target] = (failures + 1, self.frontier_retry_after(result.status, failures, state.tick))
+                    self.frontier_failure_reasons[result.status] = (
+                        self.frontier_failure_reasons.get(result.status, 0) + 1
+                    )
                     continue
+                score = (result.path_length, target[0], target[1])
+                if best is None or score < best[0]:
+                    best = (score, target, result)
+                    force_refill_selected = True
+        if best is None and not budget_deferred and max_radius is not None and state.core_position is not None:
+            fallback = sorted(
+                (
+                    target for target in self._build_band(state.core_position, max_radius)
+                    if target not in reserved and target not in obstacles and target not in occupied
+                    and target not in self.completion_cooldowns and target != worker.position
+                    and self.failed_targets.get(target, (0, 0))[1] <= state.tick
+                ),
+                key=lambda target: (abs(target[0] - worker.position[0]) + abs(target[1] - worker.position[1]),
+                                    target[0], target[1]),
+            )[:MAX_FALLBACK_FRONTIER_CANDIDATES]
+            for target in fallback:
                 result = self.frontier_path(worker.id, worker.position, target, obstacles, occupied)
                 if result.status == "FRONTIER_BUDGET":
+                    budget_deferred = True
                     break
-                if result.status in {"FOUND", "START_AT_GOAL"}:
-                    score = (target in self.completed_targets, result.path_length, target[0], target[1])
+                if result.status == "FOUND":
+                    score = (result.path_length, target[0], target[1])
                     if best is None or score < best[0]:
                         best = (score, target, result)
+            if best is not None:
+                self.frontier_fallback_assignments += 1
+                self.frontier_selection_sources[worker.id] = "fallback"
         if best is None:
+            reason = "FRONTIER_BUDGET_DEFERRED" if budget_deferred else "FRONTIER_NO_CANDIDATE"
+            self.frontier_selection_sources[worker.id] = "none"
+            self.frontier_no_candidate_reasons[reason] = self.frontier_no_candidate_reasons.get(reason, 0) + 1
             self._trim()
-            return None, PathResult(None, "NO_PATH", 0, 0, None)
+            return None, PathResult(None, reason, 0, 0, None)
         _, target, result = best
         self.active_targets[worker.id] = target
         self.active_target = target
+        if force_refill_selected:
+            self.frontier_fallback_assignments += 1
+            self.frontier_selection_sources[worker.id] = "fallback"
+        else:
+            self.frontier_selection_sources.setdefault(worker.id, "candidate")
         self._trim()
         return target, result
 
-    def complete_frontier_if_reached(self, worker: Unit, tick: int) -> None:
-        if self.active_targets.get(worker.id) == worker.position:
-            self.completed_targets[worker.position] = tick
-            self.active_targets.pop(worker.id, None)
+    def complete_frontier_if_reached(self, worker: Unit, tick: int) -> bool:
+        if self.active_targets.get(worker.id) != worker.position:
+            return False
+        self.completed_targets[worker.position] = tick
+        self.completion_cooldowns[worker.position] = tick + FRONTIER_COMPLETION_COOLDOWN_TICKS
+        self.active_targets.pop(worker.id, None)
+        self.frontier_candidates = deque(target for target in self.frontier_candidates if target != worker.position)
+        return True
 
     def visible_targets(self, state: Snapshot) -> list[Position]:
         return sorted((pos for pos in state.resource_cells
@@ -712,7 +773,8 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
         desired[worker.id] = (worker, assignment.resource, "RESOURCE")
         resource_reserved.add(assignment.resource)
     for index, worker in enumerate(w for w in workers if w.id not in desired):
-        memory.complete_frontier_if_reached(worker, state.tick)
+        if memory.complete_frontier_if_reached(worker, state.tick):
+            memory.frontier_completion_transitions.add(worker.id)
         target, path = memory.next_frontier(state, worker, obstacles, set(positions.values()) - {worker.position},
                                             frontier_reserved, memory.worker_frontier_radius(index))
         if target is not None:
@@ -720,7 +782,9 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
             frontier_reserved.add(target)
         else:
             actions[worker.id] = {"type": "WAIT"}
-            memory.traffic.holds[worker.id] = "NO_FRONTIER"
+            memory.traffic.holds[worker.id] = path.status
+            if worker.id in memory.frontier_completion_transitions:
+                memory.frontier_arrival_wait_ticks += 1
 
     # Core ingress queue for ordinary returns; only the nearest/UUID-stable carrier approaches Core.
     carriers = sorted((w for w, target, kind in desired.values() if kind == "RETURN_CORE"),

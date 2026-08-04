@@ -255,7 +255,9 @@ P1  source audit 在每次进程启动第一份 state 记录 baseline worker cou
 
 `015c688` 已修复持续 stale session：单次 restart handoff 可保留；连续三次 `TICK_MISMATCH` 时写入 `session_rejoin` 并同进程重连，停止无限高成本规划/POST。线上首段已从旧版 55 连续 stale 恢复为 1 次 stale 后 11/11 HTTP 202、12 receipt，CPU `74.4%→5.0%`。
 
-frontier 搜索现限制为每 Worker/每 Tick最多 8 次、每次最多 2000 节点；资源分配、返 Core 和 traffic 搜索仍使用原节点预算。journal 已包含 path evaluations/nodes 和 metric-window eligibility。`bb3fbea` 将 `NODE_CAP` retry 拉长为 8–60 Tick，避免远端候选快速重复消耗节点；`NO_PATH` 保留短退避。A* frontier 内核仅用于单一远端 waypoint，已完成真实线上首段验收：13/13 HTTP 202、`NODE_CAP delta=0`、CPU `1.7%`、191 次移动成功、2 次交付、1 次采集；随后 27 Tick 中 completed `+5`、Node-cap仍为零。
+frontier 搜索限制为每 Worker/每 Tick最多 8 次、每次最多 2000 节点；资源分配、返 Core 和 traffic 搜索仍使用原节点预算。`NODE_CAP` retry 为 8–60 Tick，`NO_PATH` 保留短退避。A* frontier 内核仅用于单一远端 waypoint；早期线上验证过 13/13 HTTP 202、`NODE_CAP delta=0`、CPU `1.7%`、191 次移动、2 次交付、1 次采集，随后 27 Tick completed `+5`。
+
+后续 clean session 发现 completion liveness 缺口：Worker 到达 `[119,197]` 后，仍被 completed candidate/`START_AT_GOAL` 重选，出现约 38 Tick `EXPLORE + distance=0 + WAIT`，同时 `NODE_CAP=24`。已开发并待线上验收的状态机修复：到达 waypoint 后短冷却 16 Tick、从候选队列移除该点；正常候选暂不可用时以相同 A* budget/reservation 执行最多 8 个确定性 fallback；预算耗尽写 `FRONTIER_BUDGET_DEFERRED`，无合法候选写 `FRONTIER_NO_CANDIDATE`，不再伪装为已到点 EXPLORE。journal 将写 completion cooldown、fallback、no-candidate reason、per-Worker selection source/transition。该改动不改变 Worker cap、max radius、返程/资源/Core/战斗优先级。
 
 每个当前 owned Worker 现在在每份 Agent plan 中都有显式 action（不依赖省略字段的隐式 WAIT）；journal `worker_trace` 写 position/cargo/action/intent kind/target/distance，`unassigned_workers` 必须为空。此为一次零策略改动的可审计性修复：此前日志出现 owned Worker 与计划摘要无法一一关联，不能据此盲调 traffic/frontier。上线 35 Tick 验收：`unassigned_workers=0`；两个 RETURN_CORE Worker 的同一 target 距离分别 `42→5`、`52→18` 且稳定 target 下 nonprogress=0；Explore Worker `24→6`，仅 5/33 非进展步。当前 `HARVEST=1 / DEPOSIT=0` 是远程资源的在途返程而非交通卡死，末态为当前视野无资源的 `resource_starved=true`。
 

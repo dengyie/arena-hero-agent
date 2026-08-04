@@ -384,6 +384,9 @@ async def run(args: argparse.Namespace) -> int:
                             "failed": len(memory.failed_targets),
                             "failure_reasons": dict(memory.frontier_failure_reasons),
                             "active_targets": len(memory.active_targets),
+                            "completion_cooldown_targets": len(memory.completion_cooldowns),
+                            "fallback_assignments": memory.frontier_fallback_assignments,
+                            "no_candidate_reasons": dict(memory.frontier_no_candidate_reasons),
                             "path_evaluations": memory.frontier_path_evaluations,
                             "path_nodes": memory.frontier_path_nodes,
                             "path_evaluation_cap_per_worker": MAX_FRONTIER_PATH_EVALUATIONS,
@@ -411,6 +414,8 @@ async def run(args: argparse.Namespace) -> int:
                                     + abs(worker.position[1] - plan.worker_intents[worker.id][0][1])
                                     if worker.id in plan.worker_intents else None
                                 ),
+                                "frontier_selection_source": memory.frontier_selection_sources.get(worker.id),
+                                "frontier_completion_transition": worker.id in memory.frontier_completion_transitions,
                             }
                             for worker in snapshot.workers
                         }

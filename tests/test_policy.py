@@ -567,6 +567,52 @@ class AgentTests(unittest.TestCase):
         self.assertNotEqual(p.policy_state, "EXPLORATION_EXHAUSTED")
         self.assertIn(p.policy_state, {"EXPLORE", "NO_FRONTIER"})
 
+    def test_frontier_completion_cooldown_never_reselects_reached_waypoint(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        worker = {"kind": "UNIT", "id": "worker", "controlled": True,
+                  "position": [9, 0], "unit_type": "WORKER", "cargo": 0}
+        state = snapshot_from_state(10, {"status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [core, worker], "events": []})
+        mem = ExplorationMemory(route_core=(0, 0), route_core_id="core", band_radius=9)
+        mem.active_targets["worker"] = (9, 0)
+        mem.frontier_candidates.extend([(9, 0)])
+        plan = economy_plan(state, mem)
+        self.assertNotEqual(plan.worker_intents["worker"][0], (9, 0))
+        self.assertNotEqual(plan.unit_actions["worker"]["type"], "WAIT")
+        self.assertIn((9, 0), mem.completion_cooldowns)
+        self.assertTrue(mem.frontier_completion_transitions)
+
+    def test_frontier_uses_bounded_fallback_when_completed_candidate_is_only_normal_choice(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        worker = {"kind": "UNIT", "id": "worker", "controlled": True,
+                  "position": [9, 0], "unit_type": "WORKER", "cargo": 0}
+        state = snapshot_from_state(10, {"status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [core, worker], "events": []})
+        mem = ExplorationMemory(route_core=(0, 0), route_core_id="core", band_radius=9)
+        mem.frontier_candidates.extend([(9, 0)])
+        mem.completion_cooldowns[(9, 0)] = 26
+        target, result = mem.next_frontier(state, state.workers[0], frozenset(), set(), max_radius=9)
+        self.assertIsNotNone(target)
+        self.assertNotEqual(target, (9, 0))
+        self.assertEqual(result.status, "FOUND")
+        self.assertEqual(mem.frontier_selection_sources["worker"], "fallback")
+        self.assertEqual(mem.frontier_fallback_assignments, 1)
+
+    def test_frontier_budget_deferred_is_explicit_and_not_a_failure(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        worker = {"kind": "UNIT", "id": "worker", "controlled": True,
+                  "position": [0, 0], "unit_type": "WORKER", "cargo": 0}
+        state = snapshot_from_state(10, {"status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [core, worker], "events": []})
+        mem = ExplorationMemory(route_core=(0, 0), route_core_id="core", band_radius=9)
+        mem.frontier_candidates.extend([(9, 0)])
+        mem.frontier_worker_evaluations["worker"] = MAX_FRONTIER_PATH_EVALUATIONS
+        target, result = mem.next_frontier(state, state.workers[0], frozenset(), set(), max_radius=9)
+        self.assertIsNone(target)
+        self.assertEqual(result.status, "FRONTIER_BUDGET_DEFERRED")
+        self.assertFalse(mem.failed_targets)
+        self.assertEqual(mem.frontier_no_candidate_reasons["FRONTIER_BUDGET_DEFERRED"], 1)
+
     def test_frontier_rebuilds_after_stale_candidate_batch(self):
         core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
         worker = {"kind": "UNIT", "id": "worker", "controlled": True,
