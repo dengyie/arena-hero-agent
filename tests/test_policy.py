@@ -1058,6 +1058,26 @@ class AgentTests(unittest.TestCase):
         self.assertNotIn("first", mem.safe_retreat_workers)
         self.assertEqual(next_plan.unit_actions["second"]["type"], "MOVE")
 
+    def test_ingress_queue_does_not_starve_existing_safe_retreat_with_new_carrier(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        retreat = {"kind": "UNIT", "id": "retreat", "controlled": True,
+                   "position": [2, 0], "unit_type": "WORKER", "cargo": 0}
+        enemy = {"kind": "UNIT", "id": "enemy", "controlled": False,
+                 "position": [3, 0], "unit_type": "WORKER"}
+        mem = ExplorationMemory()
+        first = snapshot_from_state(1, {"status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [core, retreat, enemy], "events": []})
+        economy_plan(first, mem)
+        self.assertEqual(mem.traffic.ingress_queue, ("retreat",))
+        carrier = {"kind": "UNIT", "id": "carrier", "controlled": True,
+                   "position": [0, 2], "unit_type": "WORKER", "cargo": 1}
+        second = snapshot_from_state(2, {"status": "ACTIVE", "resources": 0, "population": 2,
+            "objects": [core, {**retreat, "position": [1, 0]}, carrier], "events": []})
+        plan = economy_plan(second, mem)
+        self.assertEqual(mem.traffic.ingress_queue[:2], ("retreat", "carrier"))
+        self.assertEqual(plan.unit_actions["retreat"]["type"], "MOVE")
+        self.assertEqual(plan.unit_actions["carrier"], {"type": "WAIT"})
+
     def test_defense_restricts_vanguard_and_ranger_to_core_local_economy_protection(self):
         core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
         vanguard = {"kind": "UNIT", "id": "vanguard", "controlled": True,

@@ -163,6 +163,17 @@ class TrafficMemory:
             self.blocked_cells.pop(next(iter(self.blocked_cells)))
         self.holds.clear()
 
+    def reconcile_ingress_queue(self, candidates: list[tuple[str, str, int]]) -> None:
+        """Keep existing Core-approach order stable; only prioritize newly queued cargo."""
+        active = {worker_id: (kind, distance) for worker_id, kind, distance in candidates}
+        retained = [worker_id for worker_id in self.ingress_queue if worker_id in active]
+        retained_set = set(retained)
+        new = sorted(
+            (item for item in candidates if item[0] not in retained_set),
+            key=lambda item: (0 if item[1] == "RETURN_CORE" else 1, item[2], item[0]),
+        )
+        self.ingress_queue = tuple(retained + [worker_id for worker_id, _, _ in new])
+
     def mark_failure(self, worker_id: str, position: Position, reason: str, tick: int) -> None:
         planned = self.last_planned_edges.get(worker_id)
         direction = planned[1] if planned is not None and planned[0] == position else ""
@@ -846,14 +857,11 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None) -> Pl
                 memory.frontier_arrival_wait_ticks += 1
 
     # Core ingress queue serializes both cargo delivery and safe retreats near the Core.
-    carriers = sorted((
-        (w, kind) for w, target, kind in desired.values() if kind in {"RETURN_CORE", "RETURN_SAFE"}
-    ), key=lambda item: (
-        0 if item[1] == "RETURN_CORE" else 1,
-        abs(item[0].position[0] - state.core_position[0]) + abs(item[0].position[1] - state.core_position[1]),
-        item[0].id,
-    )) if state.core_position else []
-    memory.traffic.ingress_queue = tuple(worker.id for worker, _ in carriers)
+    ingress_candidates = [
+        (worker.id, kind, abs(worker.position[0] - state.core_position[0]) + abs(worker.position[1] - state.core_position[1]))
+        for worker, target, kind in desired.values() if kind in {"RETURN_CORE", "RETURN_SAFE"}
+    ] if state.core_position else []
+    memory.traffic.reconcile_ingress_queue(ingress_candidates)
 
     for worker, target, kind in sorted(desired.values(), key=lambda item: traffic_priority(item[0], state.core_position)):
         if (kind in {"RETURN_CORE", "RETURN_SAFE"} and memory.traffic.ingress_queue
