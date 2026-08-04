@@ -903,6 +903,51 @@ class AgentTests(unittest.TestCase):
                                         "position": [3, 2], "unit_type": "WORKER"}], "events": []})
         self.assertEqual(economy_plan(diagonal, ExplorationMemory()).unit_actions["ranger"], {"type": "WAIT"})
 
+    def test_combat_episode_confirms_only_friendly_death_on_next_owned_state(self):
+        mem = ExplorationMemory()
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        worker = {"kind": "UNIT", "id": "worker", "controlled": True,
+                  "position": [1, 0], "unit_type": "WORKER", "cargo": 1, "hp": 2}
+        ranger = {"kind": "UNIT", "id": "ranger", "controlled": True,
+                  "position": [0, 0], "unit_type": "RANGER", "cargo": 0, "hp": 2}
+        enemy = {"kind": "UNIT", "id": "enemy", "controlled": False,
+                 "position": [3, 0], "unit_type": "WORKER"}
+        economy_plan(snapshot_from_state(1, {"status": "ACTIVE", "resources": 0, "population": 2,
+            "objects": [core, worker, ranger, enemy], "events": []}), mem)
+        events = [
+            {"event_id": "friendly-zero", "event_type": "UNIT_DAMAGED", "reason_code": "ATTACK",
+             "target_id": "worker", "values": {"damage": 1, "hp": 0}},
+            {"event_id": "enemy-zero", "event_type": "UNIT_DAMAGED", "reason_code": "ATTACK",
+             "target_id": "enemy", "values": {"damage": 1, "hp": 0}},
+            {"event_id": "enemy-participation", "event_type": "DESTRUCTION_PARTICIPATION",
+             "target_id": "enemy", "values": {}},
+            {"event_id": "drop", "event_type": "WORKER_CARGO_DROPPED", "actor_id": "worker",
+             "values": {"amount": 1}},
+        ]
+        lethal = snapshot_from_state(2, {"status": "ACTIVE", "resources": 0, "population": 2,
+            "objects": [core, worker, ranger, enemy], "events": events})
+        economy_plan(lethal, mem)
+        self.assertEqual(set(mem.ledger.pending_friendly_deaths), {"worker"})
+        self.assertEqual(mem.ledger.combat_episode["enemy_destruction_participations"], 1)
+        self.assertEqual(mem.ledger.combat_episode["friendly_deaths"], 0)
+        confirmed = snapshot_from_state(3, {"status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [core, ranger], "events": []})
+        economy_plan(confirmed, mem)
+        self.assertEqual(mem.ledger.combat_episode["friendly_deaths"], 1)
+        self.assertEqual(mem.ledger.combat_episode["enemy_destruction_participations"], 1)
+        self.assertFalse(mem.ledger.pending_friendly_deaths)
+
+    def test_combat_episode_closes_after_idle_window(self):
+        mem = ExplorationMemory()
+        episode = mem.ledger.combat_touch(10)
+        episode["shots_hit"] = 1
+        mem.ledger.combat_close_if_idle(17)
+        self.assertIsNotNone(mem.ledger.combat_episode)
+        mem.ledger.combat_close_if_idle(18)
+        self.assertIsNone(mem.ledger.combat_episode)
+        self.assertEqual(mem.ledger.completed_combat_episodes[-1]["shots_hit"], 1)
+        self.assertEqual(mem.ledger.completed_combat_episodes[-1]["end_tick"], 10)
+
     def test_combat_event_ledger_is_idempotent_and_tracks_damage_candidate(self):
         mem = ExplorationMemory()
         core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}

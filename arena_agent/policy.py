@@ -27,6 +27,7 @@ SPAWN_WINDOW_TICKS = 20
 RISK_WINDOW_TICKS = 20
 COMBAT_DAMAGE_COOLDOWN_TICKS = 12
 COMBAT_LOSS_COOLDOWN_TICKS = 40
+COMBAT_EPISODE_IDLE_TICKS = 8
 WORKER_FRONTIER_RADII = (21, 33, 51, 75)
 MAX_ECONOMY_WORKERS = 8
 MAX_EXTERNAL_RECOVERY_POPULATION = 19
@@ -64,6 +65,9 @@ class EventLedger:
     combat_cargo_drops: deque[dict[str, Any]] = field(default_factory=deque)
     combat_cooldown_until: int = 0
     controlled_unit_ids: set[str] = field(default_factory=set)
+    pending_friendly_deaths: dict[str, int] = field(default_factory=dict)
+    combat_episode: dict[str, int] | None = None
+    completed_combat_episodes: deque[dict[str, int]] = field(default_factory=deque)
 
     def accept(self, event: dict[str, Any]) -> bool:
         event_id = str(event.get("event_id", ""))
@@ -99,7 +103,30 @@ class EventLedger:
             self.deposit_latencies.popleft()
         return latency
 
+    def combat_touch(self, tick: int) -> dict[str, int]:
+        if self.combat_episode is None:
+            self.combat_episode = {
+                "start_tick": tick, "last_tick": tick,
+                "shots_hit": 0, "shots_missed": 0, "sweeps": 0, "sweep_targets_hit": 0,
+                "outgoing_damage": 0, "incoming_damage": 0,
+                "friendly_deaths": 0, "enemy_destruction_participations": 0,
+                "friendly_cargo_lost": 0,
+            }
+        self.combat_episode["last_tick"] = tick
+        return self.combat_episode
+
+    def combat_close_if_idle(self, tick: int) -> None:
+        episode = self.combat_episode
+        if episode is None or tick - episode["last_tick"] < COMBAT_EPISODE_IDLE_TICKS:
+            return
+        episode["end_tick"] = episode["last_tick"]
+        self.completed_combat_episodes.append(dict(episode))
+        while len(self.completed_combat_episodes) > 32:
+            self.completed_combat_episodes.popleft()
+        self.combat_episode = None
+
     def trim(self, tick: int) -> None:
+        self.combat_close_if_idle(tick)
         while self.deposits and self.deposits[0] < tick - SPAWN_WINDOW_TICKS:
             self.deposits.popleft()
         while self.core_damage_ticks and self.core_damage_ticks[0] < tick - RISK_WINDOW_TICKS:
@@ -216,6 +243,13 @@ class ExplorationMemory:
         self.last_event_types = tuple(str(event.get("event_type")) for event in state.events)
         current_controlled_ids = {unit.id for unit in state.units}
         controlled_ids = self.ledger.controlled_unit_ids | current_controlled_ids
+        for target_id in list(self.ledger.pending_friendly_deaths):
+            if target_id in current_controlled_ids:
+                self.ledger.pending_friendly_deaths.pop(target_id, None)
+                continue
+            episode = self.ledger.combat_touch(state.tick)
+            episode["friendly_deaths"] += 1
+            self.ledger.pending_friendly_deaths.pop(target_id, None)
         for event in state.events:
             if not self.ledger.accept(event):
                 continue
@@ -248,31 +282,51 @@ class ExplorationMemory:
                 if memory_edge is not None:
                     self.traffic.blocked_edges.pop((actor_id, memory_edge[0], memory_edge[1]), None)
             elif kind in {"SWEEP_RESOLVED", "SHOT_HIT", "SHOT_MISSED", "DESTRUCTION_PARTICIPATION"}:
+                targets_hit = int(event.get("values", {}).get("targets_hit", 0))
+                damage = int(event.get("values", {}).get("damage", 0))
+                episode = self.ledger.combat_touch(state.tick)
+                if kind == "SWEEP_RESOLVED":
+                    episode["sweeps"] += 1
+                    episode["sweep_targets_hit"] += targets_hit
+                elif kind == "SHOT_HIT":
+                    episode["shots_hit"] += 1
+                    episode["outgoing_damage"] += damage
+                elif kind == "SHOT_MISSED":
+                    episode["shots_missed"] += 1
+                elif kind == "DESTRUCTION_PARTICIPATION":
+                    episode["enemy_destruction_participations"] += 1
                 self.ledger.combat_events.append({
                     "type": kind,
                     "actor_id": actor_id,
                     "target_id": str(event.get("target_id", "")) or None,
-                    "targets_hit": int(event.get("values", {}).get("targets_hit", 0)),
-                    "damage": int(event.get("values", {}).get("damage", 0)),
+                    "targets_hit": targets_hit,
+                    "damage": damage,
                 })
                 while len(self.ledger.combat_events) > MAX_EVENT_IDS:
                     self.ledger.combat_events.popleft()
             elif kind == "UNIT_DAMAGED" and event.get("reason_code") == "ATTACK":
                 target_id = str(event.get("target_id", ""))
-                if target_id in controlled_ids:
+                was_friendly = target_id in controlled_ids
+                if was_friendly:
                     self.ledger.record_worker_damage(target_id, state.tick)
                 hp = int(event.get("values", {}).get("hp", -1))
+                episode = self.ledger.combat_touch(state.tick)
+                damage = int(event.get("values", {}).get("damage", 0))
+                if was_friendly:
+                    episode["incoming_damage"] += damage
                 self.ledger.combat_events.append({
                     "type": "UNIT_DAMAGED", "target_id": target_id,
                     "damage": int(event.get("values", {}).get("damage", 0)), "hp": hp,
                 })
-                if target_id in controlled_ids:
+                if was_friendly:
                     self.ledger.combat_cooldown_until = max(
                         self.ledger.combat_cooldown_until, state.tick + COMBAT_DAMAGE_COOLDOWN_TICKS
                     )
                 if hp == 0:
                     self.ledger.combat_deaths.append({"target_id": target_id, "tick": state.tick})
-                    if target_id in controlled_ids:
+                    if was_friendly:
+                        self.ledger.pending_friendly_deaths[target_id] = state.tick
+                    if was_friendly:
                         self.ledger.combat_cooldown_until = max(
                             self.ledger.combat_cooldown_until, state.tick + COMBAT_LOSS_COOLDOWN_TICKS
                         )
@@ -286,6 +340,8 @@ class ExplorationMemory:
                          "tick": state.tick}
                 self.ledger.combat_cargo_drops.append(entry)
                 if owner_id in controlled_ids:
+                    episode = self.ledger.combat_touch(state.tick)
+                    episode["friendly_cargo_lost"] += entry["amount"]
                     self.ledger.combat_cooldown_until = max(
                         self.ledger.combat_cooldown_until, state.tick + COMBAT_LOSS_COOLDOWN_TICKS
                     )
