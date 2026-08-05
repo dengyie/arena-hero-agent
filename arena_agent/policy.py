@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -306,7 +306,15 @@ class TrafficMemory:
             (item for item in candidates if item[0] not in retained_set),
             key=lambda item: (0 if item[1] == "RETURN_CORE" else 1, item[2], item[0]),
         )
-        self.ingress_queue = tuple(retained + [worker_id for worker_id, _, _ in new])
+        ordered = retained + [worker_id for worker_id, _, _ in new]
+        arrived = {
+            worker_id for worker_id, kind, distance in candidates
+            if kind == "RETURN_CORE" and distance == 0
+        }
+        self.ingress_queue = tuple(
+            [worker_id for worker_id in ordered if worker_id in arrived]
+            + [worker_id for worker_id in ordered if worker_id not in arrived]
+        )
 
     def mark_failure(self, worker_id: str, position: Position, reason: str, tick: int) -> None:
         planned = self.last_planned_edges.get(worker_id)
@@ -854,11 +862,25 @@ def traffic_priority(worker: Unit, core: Position | None) -> tuple[int, str]:
     return 2, worker.id
 
 
+def movement_blocked_cells(state: Snapshot, moving_unit_id: str | None = None) -> set[Position]:
+    """Cells with no legal friendly capacity under the current v0.13 snapshot."""
+    loads: Counter[Position] = Counter()
+    if state.core_position is not None:
+        loads[state.core_position] += 1
+    for unit in state.units:
+        if unit.id != moving_unit_id:
+            loads[unit.position] += 1
+    blocked = {cell for cell, load in loads.items() if load >= 2}
+    blocked.update(enemy.position for enemy in state.visible_enemies)
+    return blocked
+
+
 def choose_traffic_move(worker: Unit, target: Position, state: Snapshot, obstacles: frozenset[Position],
-                         occupied: set[Position], reserved_destinations: set[Position],
+                         reserved_destinations: set[Position],
                          reserved_edges: set[tuple[Position, Position]], memory: ExplorationMemory) -> PathResult:
     dynamic_cells = {cell for cell, until in memory.traffic.blocked_cells.items() if until > state.tick}
     blockers = obstacles | dynamic_cells
+    occupied = movement_blocked_cells(state, worker.id)
     candidates: list[tuple[int, int, str, PathResult]] = []
     for rank, direction in enumerate(DIRECTIONS):
         if memory.traffic.is_edge_blocked(worker.id, worker.position, direction, state.tick):
@@ -866,7 +888,7 @@ def choose_traffic_move(worker: Unit, target: Position, state: Snapshot, obstacl
         nxt = step_position(worker.position, direction)
         if nxt in blockers or nxt in occupied or nxt in reserved_destinations or (nxt, worker.position) in reserved_edges:
             continue
-        path = plan_path(nxt, {target}, blockers, occupied - {worker.position})
+        path = plan_path(nxt, {target}, blockers, occupied)
         if path.status in {"FOUND", "START_AT_GOAL"}:
             candidates.append((path.path_length, rank, direction, path))
     if not candidates:
@@ -1015,8 +1037,7 @@ def _apply_defender_movement(state: Snapshot, memory: ExplorationMemory,
             proposal["state"] = "ASSEMBLE"
             proposal["candidate_cell"] = list(target)
 
-        occupied = set(positions.values()) - {unit.position}
-        move = choose_traffic_move(unit, target, state, obstacles, occupied,
+        move = choose_traffic_move(unit, target, state, obstacles,
                                    reserved_destinations, reserved_edges, memory)
         if move.direction is None:
             actions[unit.id] = {"type": "WAIT"}
@@ -1192,7 +1213,7 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None, *,
         eligible_resources,
         memory.visible_targets(state),
         lambda worker, resource: plan_path(
-            worker.position, {resource}, obstacles, set(positions.values()) - {worker.position},
+            worker.position, {resource}, obstacles, movement_blocked_cells(state, worker.id),
         ),
     )
     memory.allocation_count = len(resource_assignments)
@@ -1204,7 +1225,7 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None, *,
     for index, worker in enumerate(w for w in workers if w.id not in desired):
         if memory.complete_frontier_if_reached(worker, state.tick):
             memory.frontier_completion_transitions.add(worker.id)
-        target, path = memory.next_frontier(state, worker, obstacles, set(positions.values()) - {worker.position},
+        target, path = memory.next_frontier(state, worker, obstacles, movement_blocked_cells(state, worker.id),
                                             frontier_reserved, memory.worker_frontier_radius(index))
         if target is not None:
             desired[worker.id] = (worker, target, "EXPLORE")
@@ -1223,13 +1244,6 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None, *,
     memory.traffic.reconcile_ingress_queue(ingress_candidates)
 
     for worker, target, kind in sorted(desired.values(), key=lambda item: traffic_priority(item[0], state.core_position)):
-        if (kind in {"RETURN_CORE", "RETURN_SAFE"} and memory.traffic.ingress_queue
-                and worker.id != memory.traffic.ingress_queue[0]
-                and state.core_position is not None
-                and abs(worker.position[0] - state.core_position[0]) + abs(worker.position[1] - state.core_position[1]) <= CORE_INGRESS_RADIUS):
-            actions[worker.id] = {"type": "WAIT"}
-            memory.traffic.holds[worker.id] = "CORE_INGRESS_HOLD"
-            continue
         if worker.position == target:
             if kind == "RETURN_CORE":
                 actions[worker.id] = {"type": "DEPOSIT"}
@@ -1245,8 +1259,14 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None, *,
                 memory.traffic.holds[worker.id] = "RETURN_SAFE_AT_CORE"
                 primary_state, primary_target = "RETURN_SAFE", target
             continue
-        occupied = set(positions.values()) - {worker.position}
-        path = choose_traffic_move(worker, target, state, obstacles, occupied,
+        if (kind in {"RETURN_CORE", "RETURN_SAFE"} and memory.traffic.ingress_queue
+                and worker.id != memory.traffic.ingress_queue[0]
+                and state.core_position is not None
+                and abs(worker.position[0] - state.core_position[0]) + abs(worker.position[1] - state.core_position[1]) <= CORE_INGRESS_RADIUS):
+            actions[worker.id] = {"type": "WAIT"}
+            memory.traffic.holds[worker.id] = "CORE_INGRESS_HOLD"
+            continue
+        path = choose_traffic_move(worker, target, state, obstacles,
                                    reserved_destinations, reserved_edges, memory)
         if path.direction is None:
             actions[worker.id] = {"type": "WAIT"}

@@ -215,7 +215,7 @@ class AgentTests(unittest.TestCase):
             "required": True, "reason": "unattributed_population_increase",
         })
 
-    def test_v2_positioning_shares_worker_reservations_and_recovers_injured_defender(self):
+    def test_v2_positioning_allows_defender_to_follow_worker_vacated_cell(self):
         core = {"kind": "CORE", "id": "core", "controlled": True,
                 "position": [0, 0], "hp": 5, "shield": 5, "state": "NORMAL"}
         carrier = {"kind": "UNIT", "id": "carrier", "controlled": True,
@@ -227,12 +227,9 @@ class AgentTests(unittest.TestCase):
         plan = economy_plan(state, ExplorationMemory(), combat_mode="positioning")
         self.assertEqual(plan.unit_actions["carrier"], {"type": "MOVE", "direction": "LEFT"})
         self.assertEqual(plan.combat_decisions["guard"]["state"], "RECOVER")
-        self.assertNotEqual(plan.unit_actions["guard"], {"type": "MOVE", "direction": "UP"})
-        worker_destination = (1, 0)
-        if plan.unit_actions["guard"].get("type") == "MOVE":
-            self.assertNotEqual(step_position((2, 1), plan.unit_actions["guard"]["direction"]), worker_destination)
+        self.assertEqual(plan.unit_actions["guard"], {"type": "MOVE", "direction": "UP"})
 
-    def test_v2_worker_does_not_enter_current_defender_cell(self):
+    def test_v2_worker_may_share_singly_occupied_friendly_defender_cell(self):
         core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
         worker = {"kind": "UNIT", "id": "worker", "controlled": True,
                   "position": [0, 0], "unit_type": "WORKER", "cargo": 0, "hp": 2}
@@ -242,10 +239,38 @@ class AgentTests(unittest.TestCase):
         state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 0, "population": 2,
             "objects": [core, worker, guard, resource], "events": []})
         plan = economy_plan(state, ExplorationMemory(), combat_mode="positioning")
-        self.assertNotEqual(plan.unit_actions["worker"], {"type": "MOVE", "direction": "RIGHT"})
+        self.assertEqual(plan.unit_actions["worker"], {"type": "MOVE", "direction": "RIGHT"})
         current = economy_plan(state, ExplorationMemory(), combat_mode="current")
         shadow = economy_plan(state, ExplorationMemory(), combat_mode="shadow")
         self.assertEqual(shadow.as_dict(), current.as_dict())
+
+    def test_worker_does_not_enter_friendly_cell_already_at_capacity_two(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        first = {"kind": "UNIT", "id": "first", "controlled": True,
+                 "position": [2, 0], "unit_type": "WORKER", "cargo": 0}
+        second = {"kind": "UNIT", "id": "second", "controlled": True,
+                  "position": [2, 0], "unit_type": "VANGUARD", "cargo": 0}
+        carrier = {"kind": "UNIT", "id": "carrier", "controlled": True,
+                   "position": [3, 0], "unit_type": "WORKER", "cargo": 1}
+        state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 0, "population": 3,
+            "objects": [core, first, second, carrier], "events": []})
+        self.assertNotEqual(
+            economy_plan(state, ExplorationMemory()).unit_actions["carrier"],
+            {"type": "MOVE", "direction": "LEFT"},
+        )
+
+    def test_worker_does_not_enter_enemy_occupied_cell(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        carrier = {"kind": "UNIT", "id": "carrier", "controlled": True,
+                   "position": [3, 0], "unit_type": "WORKER", "cargo": 1}
+        enemy = {"kind": "UNIT", "id": "enemy", "controlled": False,
+                 "position": [2, 0], "unit_type": "WORKER", "cargo": 0}
+        state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [core, carrier, enemy], "events": []})
+        self.assertNotEqual(
+            economy_plan(state, ExplorationMemory()).unit_actions["carrier"],
+            {"type": "MOVE", "direction": "LEFT"},
+        )
 
     def test_v2_shadow_records_decisions_without_changing_actions(self):
         core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
@@ -701,6 +726,42 @@ class AgentTests(unittest.TestCase):
         p = economy_plan(s, ExplorationMemory())
         self.assertEqual(p.unit_actions["near"], {"type": "MOVE", "direction": "LEFT"})
         self.assertNotEqual(p.unit_actions["far"], {"type": "WAIT"})
+
+    def test_carrier_already_on_core_deposits_even_when_not_ingress_leader(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        leader = {"kind": "UNIT", "id": "a-leader", "controlled": True,
+                  "position": [2, 0], "unit_type": "WORKER", "cargo": 1}
+        arrived = {"kind": "UNIT", "id": "z-arrived", "controlled": True,
+                   "position": [0, 0], "unit_type": "WORKER", "cargo": 1}
+        state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 5, "population": 2,
+            "objects": [core, leader, arrived], "events": []})
+        memory = ExplorationMemory()
+        memory.traffic.ingress_queue = ("a-leader", "z-arrived")
+        plan = economy_plan(state, memory)
+        self.assertEqual(plan.unit_actions["z-arrived"], {"type": "DEPOSIT"})
+        self.assertEqual(memory.traffic.ingress_queue[0], "z-arrived")
+
+    def test_worker_may_enter_singly_occupied_friendly_non_core_cell(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        stationary = {"kind": "UNIT", "id": "stationary", "controlled": True,
+                      "position": [2, 0], "unit_type": "WORKER", "cargo": 0}
+        carrier = {"kind": "UNIT", "id": "carrier", "controlled": True,
+                   "position": [3, 0], "unit_type": "WORKER", "cargo": 1}
+        state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 5, "population": 2,
+            "objects": [core, stationary, carrier], "events": []})
+        plan = economy_plan(state, ExplorationMemory())
+        self.assertEqual(plan.unit_actions["carrier"], {"type": "MOVE", "direction": "LEFT"})
+
+    def test_worker_does_not_enter_core_already_holding_one_unit(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        occupant = {"kind": "UNIT", "id": "occupant", "controlled": True,
+                    "position": [0, 0], "unit_type": "WORKER", "cargo": 0}
+        carrier = {"kind": "UNIT", "id": "carrier", "controlled": True,
+                   "position": [1, 0], "unit_type": "WORKER", "cargo": 1}
+        state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 5, "population": 2,
+            "objects": [core, occupant, carrier], "events": []})
+        plan = economy_plan(state, ExplorationMemory())
+        self.assertNotEqual(plan.unit_actions["carrier"], {"type": "MOVE", "direction": "LEFT"})
 
     def test_dynamic_move_failure_avoids_same_edge_next_tick(self):
         mem = ExplorationMemory()
