@@ -916,8 +916,14 @@ Combat V2 只有同时满足以下条件才能标记为完成：
   30 resolved Tick；Vanguard 仅移动 2 次后稳定 HOLD，样本内 477 次
   `UNIT_MOVE_SUCCEEDED`、5 次 `DEPOSIT_SUCCEEDED`、2 次 `HARVEST_SUCCEEDED`，
   attack=0、spawn=0、repeated failure=0、最大 reservation=17；
-- C11 当前只开放 `live-sweep` bounded observation；`live-precision`、`live-cell`
-  和 C12 尚未开放。没有自然合法目标时必须保持 WAIT，不能制造攻击或污染样本；
+- C11 当前只开放 `live-sweep`：session `454372837399` 已连续运行数百 resolved Tick，
+  最多当前可见 2 个敌人，但没有任何敌人进入 Vanguard 正交相邻格，因此 Vanguard 按
+  契约持续 WAIT，SWEEP submission/event=0；`live-precision`、`live-cell` 未开放，且
+  population=19（18 Worker + 1 Vanguard）没有合法 Ranger 人口位；
+- C12 已增加可复现离线 evaluator `scripts/evaluate-combat-v2.py`。当前 session 实测
+  resolved Tick 已超过 250，但 `eligible_resolved_ticks=0`、clean episodes=0，且缺
+  sweep/precision/cell event coverage，因此 `strategy_quality_ready=false`；没有自然合法
+  目标或 clean baseline 时不能制造攻击、死亡或样本；
 
 用户已于 2026-08-05 明确授权继续完成剩余任务；该授权不取消 C9-C11 的串行阶段门、
 硬停止条件和独立回滚要求。任何阶段缺少自然合法目标、clean baseline 或真实事件时，
