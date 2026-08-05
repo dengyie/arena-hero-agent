@@ -829,6 +829,13 @@ Core-full/deposit regression、非预期 Unit type、pending transaction 无界�
 2. Ranger precision current-cell SHOOT；
 3. Ranger target-free `CELL_INTERCEPT`。
 
+The production Supervisor may remain configured as `live-precision`: after a real
+precision submission resolves and its episode closes normally, the same process changes
+its effective mode to `live-cell` on the next Tick. The journal records both
+`configured_mode` and effective `mode`. Passive-damage episodes, open episodes, and
+`INCOMPLETE` session-end episodes never advance the gate; restart conservatively returns
+to configured precision until a new closed precision episode exists in memory.
+
 每一项至少完成一个 bounded episode：
 
 ```text

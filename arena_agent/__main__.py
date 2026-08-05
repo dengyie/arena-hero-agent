@@ -110,6 +110,18 @@ def combat_operator_attention(snapshot: Any, combat_mode: str,
     return {"required": reason is not None, "reason": reason}
 
 
+def effective_combat_mode(configured_mode: str,
+                          completed_episodes: Any) -> str:
+    if configured_mode != "live-precision":
+        return configured_mode
+    if any(int(episode.get("precision_shots", 0) or 0) > 0
+           and episode.get("end_tick") is not None
+           and episode.get("outcome") != "INCOMPLETE"
+           for episode in completed_episodes or []):
+        return "live-cell"
+    return configured_mode
+
+
 def allocator_metrics(snapshot, matched: int, total_cost: int) -> dict[str, Any]:
     eligible = sum(1 for worker in snapshot.workers
                    if worker.cargo <= 0 and (worker.hp is None or worker.hp > 1))
@@ -387,8 +399,11 @@ async def run(args: argparse.Namespace) -> int:
                         record_session_baseline(source_audit, snapshot)
                         record_population_transition(source_audit, snapshot, source_audit["last_agent_core_action"])
                         combat_production_guard = source_audit["unattributed_population_increases"] == 0
+                        active_combat_mode = effective_combat_mode(
+                            args.combat_mode, memory.ledger.completed_combat_episodes,
+                        )
                         plan = economy_plan(
-                            snapshot, memory, combat_mode=args.combat_mode,
+                            snapshot, memory, combat_mode=active_combat_mode,
                             combat_production_guard=combat_production_guard,
                         )
                         result = await post_plan(token, tick, plan.as_dict(), args.dry_run, cookie, csrf)
@@ -564,7 +579,8 @@ async def run(args: argparse.Namespace) -> int:
                             },
                         }
                         state_summary["combat"] = {
-                            "mode": args.combat_mode,
+                            "mode": active_combat_mode,
+                            "configured_mode": args.combat_mode,
                             "decisions": plan.combat_decisions,
                             "roles": {
                                 "home_vanguard_id": memory.combat.home_vanguard_id,
@@ -580,7 +596,7 @@ async def run(args: argparse.Namespace) -> int:
                             }),
                             "production_guard": combat_production_guard,
                             "operator_attention": combat_operator_attention(
-                                snapshot, args.combat_mode, combat_production_guard
+                                snapshot, active_combat_mode, combat_production_guard
                             ),
                             "visible_enemies": len(snapshot.visible_enemies),
                             "visible_enemy_types": {

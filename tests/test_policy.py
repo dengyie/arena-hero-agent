@@ -11,6 +11,7 @@ from arena_agent.path import (FRONTIER_PATH_NODE_CAP, MAX_FRONTIER_PATH_EVALUATI
                               PathResult, plan_frontier_path, step_position)
 from arena_agent.__main__ import (PermanentAuthError, PhaseEvaluationMetrics, ResourceSupplyMetrics, allocator_metrics,
                                   combat_operator_attention, operator_attention_metrics, population_control_metrics, post_plan,
+                                  effective_combat_mode,
                                   record_population_transition,
                                   record_received_source, record_session_baseline, stale_tick_reconnect_required)
 from pathlib import Path
@@ -21,6 +22,31 @@ from arena_agent.policy import (
 from arena_agent.journal import Journal
 
 class AgentTests(unittest.TestCase):
+    def test_live_precision_auto_advances_only_after_closed_precision_episode(self):
+        self.assertEqual(effective_combat_mode("live-precision", []), "live-precision")
+        self.assertEqual(
+            effective_combat_mode("live-precision", [{"incoming_damage": 1, "precision_shots": 0}]),
+            "live-precision",
+        )
+        self.assertEqual(
+            effective_combat_mode(
+                "live-precision",
+                [{"precision_shots": 1, "shots_missed": 1, "end_tick": 9}],
+            ),
+            "live-cell",
+        )
+        self.assertEqual(
+            effective_combat_mode(
+                "live-precision",
+                [{"precision_shots": 1, "outcome": "INCOMPLETE", "end_tick": 9}],
+            ),
+            "live-precision",
+        )
+        self.assertEqual(
+            effective_combat_mode("live-sweep", [{"precision_shots": 1, "end_tick": 9}]),
+            "live-sweep",
+        )
+
     def state(self, **kw):
         data = {
             "status":"ACTIVE", "resources":5, "population":1,
