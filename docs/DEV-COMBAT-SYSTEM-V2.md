@@ -198,9 +198,11 @@ A defensive spawn requires all of:
 - no Core-full transaction or blocked carrying Worker at a full Core;
 - Core cell has a legal slot after planned movement;
 - no pending spawn transaction or recent spawn failure cooldown;
-- population remains `<= 19` after spawn;
-- `upkeep_next_tick == 0` and projected next population remains tier 0;
-- resources after cost retain `COMBAT_RESERVE = 20`;
+- population remains `<= 20` after spawn; population 19 may spawn only the missing
+  Ranger when a Vanguard is already role-bound, and population 20+ may never spawn;
+- `upkeep_next_tick == 0` before the transaction; projected upkeep uses the official
+  triangular tier formula and reserves 20 future Tick payments in addition to
+  `COMBAT_RESERVE = 20`;
 - no unexplained current-session population transition;
 - spawn order: Vanguard first, then Ranger.
 
@@ -216,9 +218,12 @@ contamination is an evaluation property, not hidden game state. Its production
 outcomes remain excluded from clean ROI until a clean session exists.
 
 At population 17, this policy can create exactly the two-unit home guard and stop
-at 19. At population 18, it creates only the Vanguard. At population 19, it
-creates neither and emits operator attention instead of crossing the upkeep
-boundary.
+at 19. At population 18, it creates only the Vanguard. If an externally over-cap
+baseline reaches population 19 with the Vanguard confirmed but no Ranger, it may
+perform exactly one Ranger transaction to population 20, provided Ranger cost plus
+20 resources of base reserve plus 20 Tick of tier-1 upkeep remain. Population 20
+is a hard Combat V2 ceiling and emits operator attention; Worker recovery remains
+separately capped by `MAX_EXTERNAL_RECOVERY_POPULATION = 19`.
 
 ### 5.3 Defensive zone and states
 
@@ -780,8 +785,8 @@ requested SPAWN
 → role journal
 ```
 
-硬停止条件：population >= 20、重复 spawn、Core-full/deposit regression、
-非预期 Unit type、pending transaction 无界增长。
+硬停止条件：population > 20、population 20 后再次请求生产、重复 spawn、
+Core-full/deposit regression、非预期 Unit type、pending transaction 无界增长。
 
 ### 11.12 C10：Positioning
 

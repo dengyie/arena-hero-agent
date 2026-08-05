@@ -32,6 +32,8 @@ COMBAT_EPISODE_IDLE_TICKS = 8
 WORKER_FRONTIER_RADII = (21, 33, 51, 75)
 MAX_ECONOMY_WORKERS = 8
 MAX_EXTERNAL_RECOVERY_POPULATION = 19
+COMBAT_POPULATION_CEILING = 20
+COMBAT_UPKEEP_RESERVE_TICKS = 20
 CAPACITY_RECOVERY_COOLDOWN = 4
 TRAFFIC_EDGE_TTL = 2
 TRAFFIC_CORE_TTL = 4
@@ -50,6 +52,11 @@ COMBAT_SPAWN_COOLDOWN = 4
 COMBAT_SPAWN_TIMEOUT = 4
 COMBAT_PRODUCTION_MODES = {"production", "positioning", "live-sweep", "live-precision", "live-cell", "live"}
 COMBAT_MOVEMENT_MODES = {"positioning", "live-sweep", "live-precision", "live-cell", "live"}
+
+
+def upkeep_for_population(population: int) -> int:
+    tier = max(0, population) // 20
+    return tier * (tier + 1) // 2
 
 
 @dataclass
@@ -119,7 +126,7 @@ class CombatMemory:
                      core_occupied: bool) -> str | None:
         if (not production_guard or core_full or core_occupied or self.pending_spawn is not None
                 or state.tick < self.spawn_cooldown_until or state.core_position is None
-                or state.core_state not in {None, "NORMAL"} or state.population >= MAX_EXTERNAL_RECOVERY_POPULATION
+                or state.core_state not in {None, "NORMAL"} or state.population >= COMBAT_POPULATION_CEILING
                 or state.upkeep_next_tick not in {None, 0}):
             return None
         missing = "VANGUARD" if self.home_vanguard_id is None else (
@@ -127,8 +134,12 @@ class CombatMemory:
         )
         if missing is None:
             return None
+        if state.population == COMBAT_POPULATION_CEILING - 1 and missing != "RANGER":
+            return None
         cost = 10 if missing == "VANGUARD" else 12
-        return missing if state.resources - cost >= COMBAT_RESERVE else None
+        projected_upkeep = upkeep_for_population(state.population + 1)
+        reserve = COMBAT_RESERVE + projected_upkeep * COMBAT_UPKEEP_RESERVE_TICKS
+        return missing if state.resources - cost >= reserve else None
 
 @dataclass
 class ResourceObservation:

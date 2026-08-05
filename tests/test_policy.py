@@ -16,7 +16,7 @@ from arena_agent.__main__ import (PermanentAuthError, PhaseEvaluationMetrics, Re
 from pathlib import Path
 from arena_agent.policy import (
     CombatMemory, ExplorationMemory, MAX_BAND_RADIUS, MAX_ECONOMY_WORKERS, MAX_EXTERNAL_RECOVERY_POPULATION, PATH_NODE_CAP,
-    economy_plan, first_step, plan_path, ranger_fire_allowed,
+    economy_plan, first_step, plan_path, ranger_fire_allowed, upkeep_for_population,
 )
 from arena_agent.journal import Journal
 
@@ -128,6 +128,10 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(memory.last_spawn_result, "CONFIRMED")
 
     def test_v2_combat_production_respects_reserve_population_and_guard(self):
+        self.assertEqual(
+            [upkeep_for_population(n) for n in (0, 19, 20, 39, 40, 59, 60)],
+            [0, 0, 1, 1, 3, 3, 6],
+        )
         core = {"kind": "CORE", "id": "core", "controlled": True,
                 "position": [0, 0], "hp": 5, "shield": 5, "state": "NORMAL"}
         workers = [{"kind": "UNIT", "id": f"w{i}", "controlled": True,
@@ -140,11 +144,39 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(plan.core_action, {"type": "SPAWN", "unit_type": "VANGUARD"})
         blocked = economy_plan(first, ExplorationMemory(), combat_mode="production", combat_production_guard=False)
         self.assertIsNone(blocked.core_action)
-        at_ceiling = snapshot_from_state(2, {"status": "ACTIVE", "resources": 100, "population": 19,
-            "upkeep_next_tick": 0, "objects": [core, *workers], "events": []})
+        guard = {"kind": "UNIT", "id": "guard", "controlled": True,
+                 "position": [0, 2], "unit_type": "VANGUARD", "cargo": 0, "hp": 4}
+        eighteen_workers = [
+            {"kind": "UNIT", "id": f"x{i}", "controlled": True,
+             "position": [i + 1, 1], "unit_type": "WORKER", "cargo": 0, "hp": 2}
+            for i in range(18)
+        ]
+        ranger_slot = snapshot_from_state(2, {"status": "ACTIVE", "resources": 95, "population": 19,
+            "upkeep_next_tick": 0, "objects": [core, *eighteen_workers, guard], "events": []})
+        self.assertEqual(
+            economy_plan(ranger_slot, ExplorationMemory(), combat_mode="production").core_action,
+            {"type": "SPAWN", "unit_type": "RANGER"},
+        )
+        low_reserve = snapshot_from_state(3, {"status": "ACTIVE", "resources": 51, "population": 19,
+            "upkeep_next_tick": 0, "objects": [core, *eighteen_workers, guard], "events": []})
+        self.assertIsNone(economy_plan(low_reserve, ExplorationMemory(), combat_mode="production").core_action)
+        exact_reserve = snapshot_from_state(3, {"status": "ACTIVE", "resources": 52, "population": 19,
+            "upkeep_next_tick": 0, "objects": [core, *eighteen_workers, guard], "events": []})
+        self.assertEqual(
+            economy_plan(exact_reserve, ExplorationMemory(), combat_mode="production").core_action,
+            {"type": "SPAWN", "unit_type": "RANGER"},
+        )
+        no_vanguard = snapshot_from_state(4, {"status": "ACTIVE", "resources": 100, "population": 19,
+            "upkeep_next_tick": 0, "objects": [core, *eighteen_workers], "events": []})
+        self.assertIsNone(economy_plan(no_vanguard, ExplorationMemory(), combat_mode="production").core_action)
+        at_ceiling = snapshot_from_state(5, {"status": "ACTIVE", "resources": 100, "population": 20,
+            "upkeep_next_tick": 1, "objects": [core, *eighteen_workers, guard], "events": []})
         self.assertIsNone(economy_plan(at_ceiling, ExplorationMemory(), combat_mode="production").core_action)
         self.assertEqual(combat_operator_attention(at_ceiling, "production", True), {
             "required": True, "reason": "combat_population_ceiling",
+        })
+        self.assertEqual(combat_operator_attention(ranger_slot, "production", True), {
+            "required": False, "reason": None,
         })
         self.assertEqual(combat_operator_attention(first, "production", False), {
             "required": True, "reason": "unattributed_population_increase",

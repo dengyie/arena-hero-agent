@@ -15,7 +15,7 @@ from urllib.request import Request, ProxyHandler, build_opener
 from .journal import Journal
 from .model import snapshot_from_state
 from .path import FRONTIER_PATH_NODE_CAP, MAX_FRONTIER_PATH_EVALUATIONS
-from .policy import (MAX_ECONOMY_WORKERS, MAX_EXTERNAL_RECOVERY_POPULATION,
+from .policy import (COMBAT_POPULATION_CEILING, MAX_ECONOMY_WORKERS, MAX_EXTERNAL_RECOVERY_POPULATION,
                      ExplorationMemory, economy_plan, ranger_fire_allowed, step_position,
                      threatened_workers, core_threatened)
 
@@ -103,7 +103,7 @@ def combat_operator_attention(snapshot: Any, combat_mode: str,
                               combat_production_guard: bool) -> dict[str, Any]:
     enabled = combat_mode not in {"current", "shadow"}
     reason = None
-    if enabled and snapshot.population >= MAX_EXTERNAL_RECOVERY_POPULATION:
+    if enabled and snapshot.population >= COMBAT_POPULATION_CEILING:
         reason = "combat_population_ceiling"
     elif enabled and not combat_production_guard:
         reason = "unattributed_population_increase"
