@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import gzip
 from pathlib import Path
 from typing import Any
 
@@ -9,12 +10,16 @@ def evaluate_combat_session(journal_path: Path | str, session: str) -> dict[str,
     plans: dict[int, dict[str, Any]] = {}
     received: set[int] = set()
     base = Path(journal_path)
-    paths = [path for path in [
-        *(base.with_name(f"{base.name}.{index}") for index in range(16, 0, -1)),
-        base,
-    ] if path.exists()]
+    paths = sorted(base.parent.glob(f"{base.name}.legacy-*.gz"))
+    for index in range(16, 0, -1):
+        plain = base.with_name(f"{base.name}.{index}")
+        if plain.exists():
+            paths.append(plain)
+    if base.exists():
+        paths.append(base)
     for path in paths:
-        with path.open(encoding="utf-8", errors="replace") as journal:
+        opener = gzip.open if path.suffix == ".gz" else open
+        with opener(path, "rt", encoding="utf-8", errors="replace") as journal:
             for line in journal:
                 try:
                     row = json.loads(line)

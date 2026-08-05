@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import gzip
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +16,15 @@ class Journal:
         )
         self.backups = max(1, backups)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._compress_oversized_backups()
+    def _compress_oversized_backups(self) -> None:
+        for index in range(1, self.backups + 1):
+            source = self.path.with_name(f"{self.path.name}.{index}")
+            target = self.path.with_name(f"{self.path.name}.legacy-{index}.gz")
+            if source.exists() and source.stat().st_size > self.max_bytes and not target.exists():
+                with source.open("rb") as src, gzip.open(target, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                source.unlink()
     def _rotate(self, incoming_bytes: int) -> None:
         if (not self.path.exists()
                 or self.path.stat().st_size + incoming_bytes <= self.max_bytes):

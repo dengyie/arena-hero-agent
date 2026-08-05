@@ -78,10 +78,18 @@ def authoritative_received_plan(receipts: list[dict[str, Any]]) -> dict[str, Any
     return merged
 
 
+def received_source_conflict(receipts: list[dict[str, Any]]) -> bool:
+    plans = [payload.get("plan") for payload in receipts if payload.get("source") == "AGENT"]
+    return len(plans) > 1 and any(plan != plans[0] for plan in plans[1:])
+
+
 def reconcile_received_plan(memory: ExplorationMemory, tick: int,
                             accepted_plan: dict[str, Any], receipts: list[dict[str, Any]],
                             shot_modes: dict[str, str]) -> None:
     """Commit attribution only for actions present in the authoritative stored plan."""
+    if received_source_conflict(receipts):
+        memory.traffic.last_planned_edges.clear()
+        return
     stored = authoritative_received_plan(receipts)
     stored_actions_raw = stored.get("unit_actions")
     stored_actions: dict[str, Any] = stored_actions_raw if isinstance(stored_actions_raw, dict) else {}
@@ -208,20 +216,29 @@ def resource_transition_audit(previous_resources: int | None, snapshot: Any,
                               prior_core_action: str | None) -> dict[str, Any] | None:
     if previous_resources is None or snapshot.resources >= previous_resources:
         return None
-    explaining_events = {
-        "UPKEEP_PAID", "CORE_RESOURCE_OVERFLOW_DESTROYED", "CORE_SPAWN_SUCCEEDED",
-        "CORE_HEAL_SUCCEEDED", "CORE_REPAIR_SUCCEEDED", "CORE_DESTROYED",
-        "CORE_RESOURCES_CAPTURED",
-    }
-    observed = {
-        str(event.get("event_type")) for event in snapshot.events
-        if event.get("event_type") in explaining_events
-    }
-    if observed or prior_core_action in {"SPAWN", "HEAL", "REPAIR_SHIELD", "SELF_DESTRUCT"}:
+    expected = 0
+    evidence: list[dict[str, Any]] = []
+    for event in snapshot.events:
+        kind = event.get("event_type")
+        values = event.get("values") or {}
+        if kind == "UPKEEP_PAID":
+            expected += int(values.get("paid", 0) or 0)
+            evidence.append({"event": kind, "paid": int(values.get("paid", 0) or 0)})
+        elif kind in {"CORE_SPAWN_SUCCEEDED", "CORE_HEAL_SUCCEEDED", "CORE_REPAIR_SUCCEEDED"}:
+            cost = int(values.get("cost", 0) or 0)
+            expected += cost
+            evidence.append({"event": kind, "cost": cost})
+        elif kind in {"CORE_RESOURCE_OVERFLOW_DESTROYED", "CORE_RESOURCES_CAPTURED"}:
+            amount = int(values.get("amount", 0) or 0)
+            expected += amount
+            evidence.append({"event": kind, "amount": amount})
+    actual = previous_resources - snapshot.resources
+    if actual == expected:
         return None
     return {
         "from": previous_resources, "to": snapshot.resources,
-        "delta": snapshot.resources - previous_resources, "tick": snapshot.tick,
+        "delta": snapshot.resources - previous_resources, "expected_spend": expected,
+        "evidence": evidence, "tick": snapshot.tick,
     }
 
 
@@ -476,7 +493,6 @@ async def run(args: argparse.Namespace) -> int:
             else:
                 raise ProtocolError("websockets.connect unavailable")
             async with connector as ws:
-                backoff = 0.5
                 saw_message = False
                 async for raw in ws:
                     saw_message = True
@@ -484,6 +500,7 @@ async def run(args: argparse.Namespace) -> int:
                     kind = msg.get("type")
                     if kind == "tick":
                         tick = int(msg["data"])
+                        backoff = 0.5
                         journal.write("tick", session=session_id, tick=tick)
                     elif kind == "state":
                         if tick is None:
@@ -492,6 +509,8 @@ async def run(args: argparse.Namespace) -> int:
                         for settled_tick in sorted(key for key in accepted_agent_plans if key < tick):
                             accepted_plan, shot_modes = accepted_agent_plans.pop(settled_tick)
                             receipts = received_by_tick.pop(settled_tick, [])
+                            if received_source_conflict(receipts):
+                                source_audit["window_contaminated"] = True
                             reconcile_received_plan(memory, settled_tick, accepted_plan, receipts, shot_modes)
                             stored = authoritative_received_plan(receipts)
                             stored_core_raw = stored.get("core_action")
@@ -499,6 +518,7 @@ async def run(args: argparse.Namespace) -> int:
                             accepted_core_raw = accepted_plan.get("core_action")
                             accepted_core = accepted_core_raw if isinstance(accepted_core_raw, dict) else None
                             source_audit["last_agent_core_action"] = (
+                                None if received_source_conflict(receipts) else
                                 stored_core.get("type") if stored_core is not None and stored_core == accepted_core else None
                             )
                         snapshot = snapshot_from_state(tick, msg["data"])

@@ -13,6 +13,7 @@ from arena_agent.__main__ import (PermanentAuthError, PhaseEvaluationMetrics, Re
                                   combat_operator_attention, operator_attention_metrics, population_control_metrics, post_plan,
                                   effective_combat_mode,
                                   reconcile_received_plan,
+                                  received_source_conflict,
                                   websocket_close_requires_reconnect,
                                   resource_transition_audit,
                                   record_population_transition,
@@ -29,7 +30,8 @@ class AgentTests(unittest.TestCase):
         snapshot = snapshot_from_state(5, {"status": "ACTIVE", "resources": 0,
             "population": 1, "objects": [], "events": []})
         self.assertEqual(resource_transition_audit(95, snapshot, None), {
-            "from": 95, "to": 0, "delta": -95, "tick": 5,
+            "from": 95, "to": 0, "delta": -95, "expected_spend": 0,
+            "evidence": [], "tick": 5,
         })
         upkeep = snapshot_from_state(6, {"status": "ACTIVE", "resources": 0,
             "population": 20, "objects": [], "events": [
@@ -37,6 +39,28 @@ class AgentTests(unittest.TestCase):
                  "values": {"due": 1, "paid": 1, "deficit": 0}},
             ]})
         self.assertIsNone(resource_transition_audit(1, upkeep, None))
+
+    def test_resource_audit_requires_numeric_cost_to_explain_drop(self):
+        state = snapshot_from_state(7, {"status": "ACTIVE", "resources": 0,
+            "population": 1, "objects": [], "events": [
+                {"event_id": "spawn", "event_type": "CORE_SPAWN_SUCCEEDED",
+                 "values": {"unit_type": "WORKER", "cost": 5}},
+            ]})
+        self.assertIsNone(resource_transition_audit(5, state, None))
+        missing_cost = snapshot_from_state(8, {"status": "ACTIVE", "resources": 0,
+            "population": 1, "objects": [], "events": [
+                {"event_id": "spawn2", "event_type": "CORE_SPAWN_SUCCEEDED",
+                 "values": {"unit_type": "WORKER"}},
+            ]})
+        audit = resource_transition_audit(5, missing_cost, None)
+        assert audit is not None
+        self.assertEqual(audit["expected_spend"], 0)
+
+    def test_conflicting_same_source_receipts_are_not_authoritative(self):
+        self.assertTrue(received_source_conflict([
+            {"source": "AGENT", "plan": {"unit_actions": {"w": {"type": "WAIT"}}}},
+            {"source": "AGENT", "plan": {"unit_actions": {"w": {"type": "MOVE", "direction": "UP"}}}},
+        ]))
 
     def test_normal_websocket_close_reconnects(self):
         self.assertTrue(websocket_close_requires_reconnect())
@@ -1544,8 +1568,8 @@ class AgentTests(unittest.TestCase):
             "objects": [core, {**retreat, "position": [1, 0]}, carrier], "events": []})
         plan = economy_plan(second, mem)
         self.assertEqual(mem.traffic.ingress_queue[:2], ("retreat", "carrier"))
-        self.assertEqual(plan.unit_actions["retreat"]["type"], "MOVE")
-        self.assertEqual(plan.unit_actions["carrier"], {"type": "WAIT"})
+        self.assertEqual(plan.unit_actions["carrier"]["type"], "MOVE")
+        self.assertEqual(plan.unit_actions["retreat"], {"type": "WAIT"})
 
     def test_remote_ingress_head_does_not_block_first_local_carrier(self):
         core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
@@ -1563,6 +1587,33 @@ class AgentTests(unittest.TestCase):
         plan = economy_plan(state, memory)
         self.assertEqual(plan.unit_actions["local"], {"type": "MOVE", "direction": "LEFT"})
         self.assertEqual(plan.unit_actions["remote"]["type"], "MOVE")
+
+    def test_local_carrier_preempts_earlier_local_safe_retreat(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        safe = {"kind": "UNIT", "id": "safe", "controlled": True,
+                "position": [3, 0], "unit_type": "WORKER", "cargo": 0, "hp": 2}
+        carrier = {"kind": "UNIT", "id": "carrier", "controlled": True,
+                   "position": [0, 3], "unit_type": "WORKER", "cargo": 1, "hp": 2}
+        memory = ExplorationMemory()
+        memory.route_core = (0, 0)
+        memory.route_core_id = "core"
+        memory.safe_retreat_workers.add("safe")
+        memory.traffic.ingress_queue = ("safe", "carrier")
+        state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 5,
+            "population": 2, "objects": [core, safe, carrier], "events": []})
+        plan = economy_plan(state, memory)
+        self.assertEqual(plan.unit_actions["carrier"]["type"], "MOVE")
+        self.assertEqual(plan.unit_actions["safe"], {"type": "WAIT"})
+
+    def test_stalled_local_carrier_yields_ingress_token(self):
+        traffic = ExplorationMemory().traffic
+        traffic.ingress_queue = ("stalled", "next")
+        candidates = [("stalled", "RETURN_CORE", 3), ("next", "RETURN_SAFE", 3)]
+        self.assertEqual(traffic.select_local_ingress_head(candidates, 1), "stalled")
+        self.assertEqual(traffic.select_local_ingress_head(candidates, 2), "stalled")
+        self.assertEqual(traffic.select_local_ingress_head(candidates, 3), "stalled")
+        self.assertEqual(traffic.select_local_ingress_head(candidates, 4), "stalled")
+        self.assertEqual(traffic.select_local_ingress_head(candidates, 5), "next")
 
     def test_defense_restricts_vanguard_and_ranger_to_core_local_economy_protection(self):
         core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}

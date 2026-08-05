@@ -27,6 +27,23 @@ class CombatEvaluationTests(unittest.TestCase):
             result = evaluate_combat_session(path, "rotated")
             self.assertEqual(result["resolved_ticks"], 1)
 
+    def test_oversized_legacy_backup_is_compressed_and_scanned(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "arena.jsonl"
+            backup = path.with_name("arena.jsonl.1")
+            rows = [
+                {"event": "plan", "session": "legacy", "tick": 1,
+                 "result": {"status": 202}, "state": {
+                     "metric_window_eligible": True, "events": [],
+                     "phase_evaluation": {"clean_combat_episodes": []}}},
+                {"event": "received", "session": "legacy", "data": {"tick": 1}},
+            ]
+            backup.write_text("".join(json.dumps(row) + "\n" for row in rows) + "x" * 300)
+            journal = Journal(path, max_bytes=100, backups=2)
+            self.assertTrue(path.with_name("arena.jsonl.legacy-1.gz").exists())
+            result = evaluate_combat_session(path, "legacy")
+            self.assertEqual(result["resolved_ticks"], 1)
+
     def test_evaluator_deduplicates_repeated_event_ids(self):
         event = {"event_id": "same", "event_type": "SHOT_HIT"}
         rows = []

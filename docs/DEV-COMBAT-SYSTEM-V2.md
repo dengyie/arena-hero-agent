@@ -79,8 +79,19 @@ first queued member currently within `CORE_INGRESS_RADIUS` advances. A remote
 queue head may keep approaching, but cannot hold all local carriers indefinitely.
 Workers already on Core execute DEPOSIT/HEAL before ingress gating.
 
+Within the local radius the token is priority-aware (`RETURN_CORE` before
+`RETURN_SAFE`) while preserving FIFO inside a priority class. A holder that does
+not reduce Core distance for four consecutive Ticks yields temporarily so one
+Manual-oscillated Unit cannot recreate the deadlock.
+
+Conflicting same-Tick AGENT receipts are non-authoritative: they contaminate the
+window and cannot confirm movement edges, combat submissions, spawn acceptance,
+population attribution, or resource attribution. Duplicate identical receipts
+remain idempotent.
+
 The JSONL journal rotates before 32 MiB with bounded backups. Evaluators scan
 rotated segments oldest-to-newest and deduplicate server events by `event_id`.
+Oversized pre-rotation legacy files are compressed once and remain evaluator-readable.
 Normal WebSocket closure reconnects in-process; permanent authentication rejection
 remains a stop. Source-directory deployment restores the pre-sync managed tree
 and Supervisor configuration if post-sync verification or restart fails.

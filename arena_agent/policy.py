@@ -38,6 +38,7 @@ CAPACITY_RECOVERY_COOLDOWN = 4
 TRAFFIC_EDGE_TTL = 2
 TRAFFIC_CORE_TTL = 4
 CORE_INGRESS_RADIUS = 3
+CORE_INGRESS_STALL_TICKS = 4
 CORE_DEFENSE_RESERVE = 10
 MAX_CORE_HP = 5
 MAX_CORE_SHIELD = 5
@@ -286,6 +287,10 @@ class TrafficMemory:
     repeated_failures: dict[tuple[str, Position, str, str], int] = field(default_factory=dict)
     last_planned_edges: dict[str, tuple[Position, str]] = field(default_factory=dict)
     ingress_queue: tuple[str, ...] = ()
+    local_ingress_holder: str | None = None
+    local_ingress_distance: int | None = None
+    local_ingress_stall_ticks: int = 0
+    ingress_yield_until: dict[str, int] = field(default_factory=dict)
     holds: dict[str, str] = field(default_factory=dict)
 
     def trim(self, tick: int) -> None:
@@ -296,6 +301,44 @@ class TrafficMemory:
         while len(self.blocked_cells) > MAX_DYNAMIC_CELLS:
             self.blocked_cells.pop(next(iter(self.blocked_cells)))
         self.holds.clear()
+        self.ingress_yield_until = {
+            worker_id: until for worker_id, until in self.ingress_yield_until.items() if until > tick
+        }
+
+    def select_local_ingress_head(self, candidates: list[tuple[str, str, int]], tick: int) -> str | None:
+        details = {worker_id: (kind, distance) for worker_id, kind, distance in candidates}
+        local = [worker_id for worker_id in self.ingress_queue
+                 if details.get(worker_id, ("", CORE_INGRESS_RADIUS + 1))[1] <= CORE_INGRESS_RADIUS]
+        if not local:
+            self.local_ingress_holder = None
+            self.local_ingress_distance = None
+            self.local_ingress_stall_ticks = 0
+            return None
+
+        def rank(worker_id: str) -> tuple[int, int]:
+            kind = details[worker_id][0]
+            return ({"RETURN_CORE": 0, "RETURN_HEAL": 1, "RETURN_SAFE": 2}.get(kind, 3),
+                    self.ingress_queue.index(worker_id))
+
+        available = [worker_id for worker_id in local if self.ingress_yield_until.get(worker_id, 0) <= tick]
+        selected = min(available or local, key=rank)
+        distance = details[selected][1]
+        if selected == self.local_ingress_holder:
+            self.local_ingress_stall_ticks = (
+                0 if self.local_ingress_distance is None or distance < self.local_ingress_distance
+                else self.local_ingress_stall_ticks + 1
+            )
+            if self.local_ingress_stall_ticks >= CORE_INGRESS_STALL_TICKS and len(local) > 1:
+                self.ingress_yield_until[selected] = tick + CORE_INGRESS_STALL_TICKS
+                alternatives = [worker_id for worker_id in local if worker_id != selected]
+                selected = min(alternatives, key=rank)
+                distance = details[selected][1]
+                self.local_ingress_stall_ticks = 0
+        else:
+            self.local_ingress_stall_ticks = 0
+        self.local_ingress_holder = selected
+        self.local_ingress_distance = distance
+        return selected
 
     def reconcile_ingress_queue(self, candidates: list[tuple[str, str, int]]) -> None:
         """Keep existing Core-approach order stable; only prioritize newly queued cargo."""
@@ -1273,12 +1316,7 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None, *,
         for worker, target, kind in desired.values() if kind in {"RETURN_CORE", "RETURN_SAFE"}
     ] if state.core_position else []
     memory.traffic.reconcile_ingress_queue(ingress_candidates)
-    ingress_distances = {worker_id: distance for worker_id, _, distance in ingress_candidates}
-    local_ingress_head = next(
-        (worker_id for worker_id in memory.traffic.ingress_queue
-         if ingress_distances.get(worker_id, CORE_INGRESS_RADIUS + 1) <= CORE_INGRESS_RADIUS),
-        None,
-    )
+    local_ingress_head = memory.traffic.select_local_ingress_head(ingress_candidates, state.tick)
 
     for worker, target, kind in sorted(desired.values(), key=lambda item: traffic_priority(item[0], state.core_position)):
         if worker.position == target:
