@@ -945,13 +945,16 @@ Combat V2 只有同时满足以下条件才能标记为完成：
   30 resolved Tick；Vanguard 仅移动 2 次后稳定 HOLD，样本内 477 次
   `UNIT_MOVE_SUCCEEDED`、5 次 `DEPOSIT_SUCCEEDED`、2 次 `HARVEST_SUCCEEDED`，
   attack=0、spawn=0、repeated failure=0、最大 reservation=17；
-- C11 当前只开放 `live-sweep`：session `454372837399` 的旧样本没有自然相邻
+- C11 已开放到 `live-precision`：session `454372837399` 的旧样本没有自然相邻
   SWEEP；随后 session `a4fa3ca1eb3a` 完成唯一 Ranger 原子生产事务，但 tier-1
   upkeep 供给不足，资源从 83 降至 0，Tick `55891-55892` 连续出现
   `UPKEEP_PAID deficit=1`，远端 Worker `8cd0622d-...` HP `1→0`，population
   自然回到 19。Ranger仍存活且role已绑定；该窗口确认一名friendly death，严禁作为
   clean combat/ROI证据。production已新增20-Tick真实deposit供给门和upkeep fuse；
-  `live-precision`、`live-cell` 尚未开放；
+  commit `03fbf93` 以 configured `live-precision` 运行，session `47ded8a978dc`
+  已至少80 resolved Tick、资源恢复至37、无新死亡/cargo loss/deficit。当前仍未遇到
+  Core防区内自然合法precision射线；正常closed precision episode后effective mode会
+  自动晋级`live-cell`，但截至该cutoff尚无SHOOT/SWEEP事件链；
 - C12 已增加可复现离线 evaluator `scripts/evaluate-combat-v2.py`。当前 session 实测
   resolved Tick 已超过 250，但 `eligible_resolved_ticks=0`、clean episodes=0，且缺
   sweep/precision/cell event coverage，因此 `strategy_quality_ready=false`；没有自然合法
