@@ -909,10 +909,16 @@ Combat V2 只有同时满足以下条件才能标记为完成：
 - C8 线上样本的 baseline 为 population=19、17 Worker，所有 Tick
   `metric_window_eligible=false`；因此不能推出经济、收益或战斗 ROI；当前 state 没有己方
   Vanguard/Ranger，combat proposal coverage=0，属于未观测，不是战斗成功；
-- C9-C12 均未开放；C11 已拆为 `live-sweep` → `live-precision` → `live-cell` 累进
-  gate，禁止一次开放；D7 rollback 仅恢复 Arena Supervisor 配置和 `/data/arena-hero-agent`
-  代码备份，不涉及全局 Supervisor/Chrome。
+- C9 `production-verified`：session `a2d4d29bf27f` 于 Tick `54712` 仅提交一次
+  Vanguard SPAWN，完成 `202 → received → CORE_SPAWN_SUCCEEDED → population=19 →
+  owned Vanguard → home_vanguard_id → transaction CONFIRMED`；后续 10 Tick 无重复 SPAWN；
+- C10 `positioning-verified`：session `3952d46b91d9` 的 Tick `54731-54760` 共
+  30 resolved Tick；Vanguard 仅移动 2 次后稳定 HOLD，样本内 477 次
+  `UNIT_MOVE_SUCCEEDED`、5 次 `DEPOSIT_SUCCEEDED`、2 次 `HARVEST_SUCCEEDED`，
+  attack=0、spawn=0、repeated failure=0、最大 reservation=17；
+- C11 当前只开放 `live-sweep` bounded observation；`live-precision`、`live-cell`
+  和 C12 尚未开放。没有自然合法目标时必须保持 WAIT，不能制造攻击或污染样本；
 
-本任务清单仍不授权线上行为改变。获得批准后，先执行 C0-C2 和 D1-D2 的
-测试/纯函数批次；C3-C7 仍只完成本地实现与回归。C8-C11 每个线上行为阶段
-都需要单独明确授权和事件级报告。
+用户已于 2026-08-05 明确授权继续完成剩余任务；该授权不取消 C9-C11 的串行阶段门、
+硬停止条件和独立回滚要求。任何阶段缺少自然合法目标、clean baseline 或真实事件时，
+只能保留在最后一个已验证阶段，不能用 synthetic/人为行为替代线上证据。

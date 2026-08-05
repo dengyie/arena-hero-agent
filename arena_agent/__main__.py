@@ -199,28 +199,29 @@ class PhaseEvaluationMetrics:
         if not eligible:
             for worker_id in list(self.fallback_pending):
                 self._close_fallback(worker_id, "ABORTED_CONTAMINATED")
-            if memory.ledger.combat_episode is not None:
+            if (memory.ledger.combat_episode is not None or
+                    self._completed_episode_count < len(memory.ledger.completed_combat_episodes)):
                 self._combat_episode_contaminated = True
-            return
-        for worker_id, source in memory.frontier_selection_sources.items():
-            if source == "fallback":
-                self._close_fallback(worker_id, "REPLACED_BY_NEW_FALLBACK")
-                self.fallback_pending[worker_id] = {
-                    "tick": snapshot.tick, "path_length": plan.path_length, "harvested_tick": -1,
-                }
-        for event in snapshot.events:
-            actor_id = str(event.get("actor_id", ""))
-            if event.get("event_type") == "HARVEST_SUCCEEDED":
-                if actor_id in self.fallback_pending:
-                    self.fallback_pending[actor_id]["harvested_tick"] = snapshot.tick
-            elif event.get("event_type") == "DEPOSIT_SUCCEEDED":
-                self._close_fallback(actor_id, "DEPOSIT_AFTER_FALLBACK")
-        for worker_id, item in list(self.fallback_pending.items()):
-            if snapshot.tick - item["tick"] >= self.FALLBACK_WINDOW_TICKS:
-                self._close_fallback(
-                    worker_id,
-                    "HARVEST_AFTER_FALLBACK" if item["harvested_tick"] >= 0 else "EXPIRED_NO_RESOLUTION",
-                )
+        else:
+            for worker_id, source in memory.frontier_selection_sources.items():
+                if source == "fallback":
+                    self._close_fallback(worker_id, "REPLACED_BY_NEW_FALLBACK")
+                    self.fallback_pending[worker_id] = {
+                        "tick": snapshot.tick, "path_length": plan.path_length, "harvested_tick": -1,
+                    }
+            for event in snapshot.events:
+                actor_id = str(event.get("actor_id", ""))
+                if event.get("event_type") == "HARVEST_SUCCEEDED":
+                    if actor_id in self.fallback_pending:
+                        self.fallback_pending[actor_id]["harvested_tick"] = snapshot.tick
+                elif event.get("event_type") == "DEPOSIT_SUCCEEDED":
+                    self._close_fallback(actor_id, "DEPOSIT_AFTER_FALLBACK")
+            for worker_id, item in list(self.fallback_pending.items()):
+                if snapshot.tick - item["tick"] >= self.FALLBACK_WINDOW_TICKS:
+                    self._close_fallback(
+                        worker_id,
+                        "HARVEST_AFTER_FALLBACK" if item["harvested_tick"] >= 0 else "EXPIRED_NO_RESOLUTION",
+                    )
         while self._completed_episode_count < len(memory.ledger.completed_combat_episodes):
             episode = dict(memory.ledger.completed_combat_episodes[self._completed_episode_count])
             episode["outcome"] = (

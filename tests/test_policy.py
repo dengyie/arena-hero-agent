@@ -1344,6 +1344,24 @@ class AgentTests(unittest.TestCase):
         metrics.observe(closed, economy_plan(closed, mem), mem, eligible=True)
         self.assertEqual(metrics.as_dict()["clean_combat_episodes"][-1]["outcome"], "EXCLUDED_CONTAMINATED")
 
+    def test_phase_evaluation_consumes_episode_closed_on_contaminated_tick(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        worker = {"kind": "UNIT", "id": "worker", "controlled": True,
+                  "position": [1, 0], "unit_type": "WORKER", "cargo": 0}
+        mem = ExplorationMemory()
+        metrics = PhaseEvaluationMetrics()
+        mem.ledger.completed_combat_episodes.append({
+            "start_tick": 1, "end_tick": 9, "shots_hit": 1,
+        })
+        snapshot = snapshot_from_state(9, {
+            "status": "ACTIVE", "resources": 0, "population": 1,
+            "objects": [core, worker], "events": [],
+        })
+        metrics.observe(snapshot, economy_plan(snapshot, mem), mem, eligible=False)
+        episodes = metrics.as_dict()["clean_combat_episodes"]
+        self.assertEqual(len(episodes), 1)
+        self.assertEqual(episodes[0]["outcome"], "EXCLUDED_CONTAMINATED")
+
     def test_ranger_shoots_only_current_visible_clear_legal_target(self):
         core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
         ranger = {"kind": "UNIT", "id": "ranger", "controlled": True,
