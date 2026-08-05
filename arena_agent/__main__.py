@@ -33,6 +33,11 @@ def stale_tick_reconnect_required(streak: int, result: dict[str, Any]) -> tuple[
     return next_streak, next_streak >= STALE_TICK_RECONNECT_THRESHOLD
 
 
+def websocket_close_requires_reconnect() -> bool:
+    """A normal transport close is transient; auth failures exit through a separate path."""
+    return True
+
+
 def record_received_source(audit: dict[str, Any], received: Any) -> dict[str, Any]:
     """Classify a stored source plan for metrics without affecting decisions."""
     payload = received if isinstance(received, dict) else {}
@@ -50,6 +55,69 @@ def record_received_source(audit: dict[str, Any], received: Any) -> dict[str, An
         if core_action:
             audit["external_core_actions"] += 1
     return payload
+
+
+def authoritative_received_plan(receipts: list[dict[str, Any]]) -> dict[str, Any]:
+    """Merge stored source plans using MANUAL per-field precedence, independent of arrival order."""
+    agent: dict[str, Any] = {}
+    manuals: list[dict[str, Any]] = []
+    for payload in receipts:
+        plan_raw = payload.get("plan")
+        plan: dict[str, Any] = plan_raw if isinstance(plan_raw, dict) else {}
+        if payload.get("source") == "AGENT":
+            agent = dict(plan)
+        elif payload.get("source") == "MANUAL":
+            manuals.append(plan)
+    merged = dict(agent)
+    unit_actions = dict(agent.get("unit_actions") or {})
+    for manual in manuals:
+        unit_actions.update(manual.get("unit_actions") or {})
+        if "core_action" in manual:
+            merged["core_action"] = manual.get("core_action")
+    merged["unit_actions"] = unit_actions
+    return merged
+
+
+def reconcile_received_plan(memory: ExplorationMemory, tick: int,
+                            accepted_plan: dict[str, Any], receipts: list[dict[str, Any]],
+                            shot_modes: dict[str, str]) -> None:
+    """Commit attribution only for actions present in the authoritative stored plan."""
+    stored = authoritative_received_plan(receipts)
+    stored_actions_raw = stored.get("unit_actions")
+    stored_actions: dict[str, Any] = stored_actions_raw if isinstance(stored_actions_raw, dict) else {}
+    accepted_actions_raw = accepted_plan.get("unit_actions")
+    accepted_actions: dict[str, Any] = (
+        accepted_actions_raw if isinstance(accepted_actions_raw, dict) else {}
+    )
+    has_agent_receipt = any(payload.get("source") == "AGENT" for payload in receipts)
+    manual_actor_ids = {
+        actor_id
+        for payload in receipts if payload.get("source") == "MANUAL"
+        for actor_id in ((payload.get("plan") or {}).get("unit_actions") or {})
+    }
+    manual_core_override = any(
+        payload.get("source") == "MANUAL"
+        and isinstance(payload.get("plan"), dict)
+        and "core_action" in payload["plan"]
+        for payload in receipts
+    )
+    for actor_id, action in accepted_actions.items():
+        authoritative_agent_action = (
+            has_agent_receipt and actor_id not in manual_actor_ids
+            and stored_actions.get(actor_id) == action
+        )
+        if action.get("type") == "MOVE" and not authoritative_agent_action:
+            memory.traffic.last_planned_edges.pop(actor_id, None)
+        if (action.get("type") == "SHOOT" and authoritative_agent_action
+                and actor_id in shot_modes):
+            memory.ledger.record_combat_submission(actor_id, shot_modes[actor_id], tick)
+    accepted_core = accepted_plan.get("core_action")
+    stored_core = stored.get("core_action")
+    if (has_agent_receipt and not manual_core_override
+            and isinstance(accepted_core, dict) and stored_core == accepted_core
+            and accepted_core.get("type") == "SPAWN"
+            and accepted_core.get("unit_type") in {"VANGUARD", "RANGER"}):
+        memory.combat.mark_spawn_accepted(tick)
 
 
 def record_session_baseline(audit: dict[str, Any], snapshot: Any) -> None:
@@ -116,7 +184,7 @@ def effective_combat_mode(configured_mode: str,
         return configured_mode
     if any(int(episode.get("precision_shots", 0) or 0) > 0
            and episode.get("end_tick") is not None
-           and episode.get("outcome") != "INCOMPLETE"
+           and episode.get("outcome") == "CLEAN_COMPLETE"
            for episode in completed_episodes or []):
         return "live-cell"
     return configured_mode
@@ -133,6 +201,27 @@ def allocator_metrics(snapshot, matched: int, total_cost: int) -> dict[str, Any]
         "unmatched_eligible": max(0, eligible - matched),
         "resource_starved": bool(snapshot.workers) and not visible_resources,
         "total_cost": total_cost,
+    }
+
+
+def resource_transition_audit(previous_resources: int | None, snapshot: Any,
+                              prior_core_action: str | None) -> dict[str, Any] | None:
+    if previous_resources is None or snapshot.resources >= previous_resources:
+        return None
+    explaining_events = {
+        "UPKEEP_PAID", "CORE_RESOURCE_OVERFLOW_DESTROYED", "CORE_SPAWN_SUCCEEDED",
+        "CORE_HEAL_SUCCEEDED", "CORE_REPAIR_SUCCEEDED", "CORE_DESTROYED",
+        "CORE_RESOURCES_CAPTURED",
+    }
+    observed = {
+        str(event.get("event_type")) for event in snapshot.events
+        if event.get("event_type") in explaining_events
+    }
+    if observed or prior_core_action in {"SPAWN", "HEAL", "REPAIR_SHIELD", "SELF_DESTRUCT"}:
+        return None
+    return {
+        "from": previous_resources, "to": snapshot.resources,
+        "delta": snapshot.resources - previous_resources, "tick": snapshot.tick,
     }
 
 
@@ -356,6 +445,8 @@ async def run(args: argparse.Namespace) -> int:
                     "last_agent_core_action": None, "unattributed_population_increases": 0}
     stale_tick_streak = 0
     reconnect_reason: str | None = None
+    accepted_agent_plans: dict[int, tuple[dict[str, Any], dict[str, str]]] = {}
+    received_by_tick: dict[int, list[dict[str, Any]]] = {}
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     if cookie:
         headers["Cookie"] = cookie
@@ -363,6 +454,8 @@ async def run(args: argparse.Namespace) -> int:
     if csrf:
         headers["X-CSRF-Token"] = csrf
     ticks = 0
+    tick: int | None = None
+    previous_resources: int | None = None
     backoff = 0.5
     session_id = hashlib.sha256(f"{time.time_ns()}".encode()).hexdigest()[:12]
     journal.write("session_start", session=session_id, dry_run=args.dry_run,
@@ -393,14 +486,31 @@ async def run(args: argparse.Namespace) -> int:
                         tick = int(msg["data"])
                         journal.write("tick", session=session_id, tick=tick)
                     elif kind == "state":
-                        if "tick" not in locals():
+                        if tick is None:
                             raise ProtocolError("state arrived before tick")
+                        source_audit["last_agent_core_action"] = None
+                        for settled_tick in sorted(key for key in accepted_agent_plans if key < tick):
+                            accepted_plan, shot_modes = accepted_agent_plans.pop(settled_tick)
+                            receipts = received_by_tick.pop(settled_tick, [])
+                            reconcile_received_plan(memory, settled_tick, accepted_plan, receipts, shot_modes)
+                            stored = authoritative_received_plan(receipts)
+                            stored_core_raw = stored.get("core_action")
+                            stored_core = stored_core_raw if isinstance(stored_core_raw, dict) else None
+                            accepted_core_raw = accepted_plan.get("core_action")
+                            accepted_core = accepted_core_raw if isinstance(accepted_core_raw, dict) else None
+                            source_audit["last_agent_core_action"] = (
+                                stored_core.get("type") if stored_core is not None and stored_core == accepted_core else None
+                            )
                         snapshot = snapshot_from_state(tick, msg["data"])
+                        unexplained_resource_delta = resource_transition_audit(
+                            previous_resources, snapshot, source_audit["last_agent_core_action"],
+                        )
+                        previous_resources = snapshot.resources
                         record_session_baseline(source_audit, snapshot)
                         record_population_transition(source_audit, snapshot, source_audit["last_agent_core_action"])
                         combat_production_guard = source_audit["unattributed_population_increases"] == 0
                         active_combat_mode = effective_combat_mode(
-                            args.combat_mode, memory.ledger.completed_combat_episodes,
+                            args.combat_mode, phase_evaluation.combat_episodes,
                         )
                         plan = economy_plan(
                             snapshot, memory, combat_mode=active_combat_mode,
@@ -409,16 +519,17 @@ async def run(args: argparse.Namespace) -> int:
                         result = await post_plan(token, tick, plan.as_dict(), args.dry_run, cookie, csrf)
                         stale_tick_streak, should_reconnect = stale_tick_reconnect_required(stale_tick_streak, result)
                         if result.get("status") == 202:
-                            source_audit["last_agent_core_action"] = (plan.core_action or {}).get("type")
-                            if ((plan.core_action or {}).get("type") == "SPAWN"
-                                    and (plan.core_action or {}).get("unit_type") in {"VANGUARD", "RANGER"}):
-                                memory.combat.mark_spawn_accepted(tick)
-                            for actor_id, action in plan.unit_actions.items():
-                                if action.get("type") != "SHOOT":
-                                    continue
-                                mode = plan.combat_decisions.get(actor_id, {}).get("target_mode")
-                                if mode in {"PRECISION_CURRENT", "CELL_INTERCEPT"}:
-                                    memory.ledger.record_combat_submission(actor_id, mode, tick)
+                            accepted_agent_plans[tick] = (
+                                plan.as_dict(),
+                                {
+                                    actor_id: mode
+                                    for actor_id, decision in plan.combat_decisions.items()
+                                    for mode in [decision.get("target_mode")]
+                                    if mode in {"PRECISION_CURRENT", "CELL_INTERCEPT"}
+                                },
+                            )
+                            while len(accepted_agent_plans) > 8:
+                                accepted_agent_plans.pop(min(accepted_agent_plans))
                         if should_reconnect:
                             reconnect_reason = "stale_tick_streak"
                         raw_state = msg["data"]
@@ -487,6 +598,7 @@ async def run(args: argparse.Namespace) -> int:
                         state_summary["population_control"] = population_control_metrics(snapshot)
                         state_summary["metric_window_eligible"] = metrics_eligible
                         state_summary["resource_supply"] = resource_supply.as_dict()
+                        state_summary["unexplained_resource_delta"] = unexplained_resource_delta
                         state_summary["phase_evaluation"] = phase_evaluation.as_dict()
                         state_summary["operator_attention"] = operator_attention_metrics(snapshot, plan.policy_state)
                         state_summary["policy_state"] = plan.policy_state
@@ -632,6 +744,12 @@ async def run(args: argparse.Namespace) -> int:
                             return 0
                     elif kind == "received":
                         received = record_received_source(source_audit, msg.get("data"))
+                        received_tick_raw = received.get("tick")
+                        authoritative_tick = received_tick_raw if isinstance(received_tick_raw, int) else None
+                        if authoritative_tick is not None:
+                            received_by_tick.setdefault(authoritative_tick, []).append(received)
+                            while len(received_by_tick) > 8:
+                                received_by_tick.pop(min(received_by_tick))
                         journal.write("received", session=session_id, data=received)
                     else:
                         journal.write("unknown_message", session=session_id, data=msg)
@@ -642,9 +760,12 @@ async def run(args: argparse.Namespace) -> int:
                     reconnect_reason = None
                     await asyncio.sleep(0.5)
                     continue
-                if saw_message:
-                    end_session("ws_closed")
-                    return 43
+                if websocket_close_requires_reconnect():
+                    journal.write("ws_closed_reconnect", session=session_id, saw_message=saw_message,
+                                  backoff=backoff)
+                    await asyncio.sleep(backoff)
+                    backoff = min(5.0, backoff * 2)
+                    continue
         except KeyboardInterrupt:
             end_session("keyboard_interrupt")
             return 0

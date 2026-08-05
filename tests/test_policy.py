@@ -12,6 +12,9 @@ from arena_agent.path import (FRONTIER_PATH_NODE_CAP, MAX_FRONTIER_PATH_EVALUATI
 from arena_agent.__main__ import (PermanentAuthError, PhaseEvaluationMetrics, ResourceSupplyMetrics, allocator_metrics,
                                   combat_operator_attention, operator_attention_metrics, population_control_metrics, post_plan,
                                   effective_combat_mode,
+                                  reconcile_received_plan,
+                                  websocket_close_requires_reconnect,
+                                  resource_transition_audit,
                                   record_population_transition,
                                   record_received_source, record_session_baseline, stale_tick_reconnect_required)
 from pathlib import Path
@@ -22,6 +25,74 @@ from arena_agent.policy import (
 from arena_agent.journal import Journal
 
 class AgentTests(unittest.TestCase):
+    def test_unexplained_resource_drop_is_journaled_but_explained_drop_is_not(self):
+        snapshot = snapshot_from_state(5, {"status": "ACTIVE", "resources": 0,
+            "population": 1, "objects": [], "events": []})
+        self.assertEqual(resource_transition_audit(95, snapshot, None), {
+            "from": 95, "to": 0, "delta": -95, "tick": 5,
+        })
+        upkeep = snapshot_from_state(6, {"status": "ACTIVE", "resources": 0,
+            "population": 20, "objects": [], "events": [
+                {"event_id": "upkeep", "event_type": "UPKEEP_PAID",
+                 "values": {"due": 1, "paid": 1, "deficit": 0}},
+            ]})
+        self.assertIsNone(resource_transition_audit(1, upkeep, None))
+
+    def test_normal_websocket_close_reconnects(self):
+        self.assertTrue(websocket_close_requires_reconnect())
+
+    def test_received_manual_override_clears_agent_move_and_does_not_record_shot(self):
+        memory = ExplorationMemory()
+        memory.traffic.mark_planned_move("worker", (0, 0), "RIGHT")
+        accepted = {"unit_actions": {
+            "worker": {"type": "MOVE", "direction": "RIGHT"},
+            "ranger": {"type": "SHOOT", "target_id": "enemy", "expected_cell": [2, 0]},
+        }}
+        received = {"tick": 7, "source": "MANUAL", "plan": {
+            "tick": 7, "unit_actions": {"worker": {"type": "MOVE", "direction": "LEFT"}},
+        }}
+        reconcile_received_plan(memory, 7, accepted, [received], {"ranger": "PRECISION_CURRENT"})
+        self.assertNotIn("worker", memory.traffic.last_planned_edges)
+        self.assertFalse(memory.ledger.pending_combat_submissions)
+
+    def test_received_matching_agent_plan_records_shot_and_spawn_acceptance(self):
+        memory = ExplorationMemory()
+        memory.combat.request_spawn("RANGER", 8, ())
+        accepted = {
+            "unit_actions": {
+                "ranger": {"type": "SHOOT", "target_id": "enemy", "expected_cell": [2, 0]},
+            },
+            "core_action": {"type": "SPAWN", "unit_type": "RANGER"},
+        }
+        received = {"tick": 8, "source": "AGENT", "plan": {"tick": 8, **accepted}}
+        reconcile_received_plan(memory, 8, accepted, [received], {"ranger": "PRECISION_CURRENT"})
+        self.assertEqual(memory.combat.last_spawn_result, "ACCEPTED")
+        self.assertEqual(memory.ledger.pending_combat_submissions[("ranger", 8)], "PRECISION_CURRENT")
+
+    def test_manual_override_wins_regardless_of_receipt_arrival_order(self):
+        accepted = {"unit_actions": {
+            "ranger": {"type": "SHOOT", "target_id": "enemy", "expected_cell": [2, 0]},
+        }}
+        agent = {"tick": 9, "source": "AGENT", "plan": {"tick": 9, **accepted}}
+        manual = {"tick": 9, "source": "MANUAL", "plan": {"tick": 9,
+            "unit_actions": {"ranger": {"type": "MOVE", "direction": "LEFT"}}}}
+        for receipts in ([agent, manual], [manual, agent]):
+            memory = ExplorationMemory()
+            reconcile_received_plan(memory, 9, accepted, list(receipts),
+                                    {"ranger": "PRECISION_CURRENT"})
+            self.assertFalse(memory.ledger.pending_combat_submissions)
+
+    def test_identical_manual_action_is_not_attributed_to_agent(self):
+        shot = {"type": "SHOOT", "target_id": "enemy", "expected_cell": [2, 0]}
+        accepted = {"unit_actions": {"ranger": shot}}
+        agent = {"tick": 10, "source": "AGENT", "plan": {"tick": 10, **accepted}}
+        manual = {"tick": 10, "source": "MANUAL", "plan": {"tick": 10,
+            "unit_actions": {"ranger": dict(shot)}}}
+        memory = ExplorationMemory()
+        reconcile_received_plan(memory, 10, accepted, [agent, manual],
+                                {"ranger": "PRECISION_CURRENT"})
+        self.assertFalse(memory.ledger.pending_combat_submissions)
+
     def test_live_precision_auto_advances_only_after_closed_precision_episode(self):
         self.assertEqual(effective_combat_mode("live-precision", []), "live-precision")
         self.assertEqual(
@@ -31,7 +102,8 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(
             effective_combat_mode(
                 "live-precision",
-                [{"precision_shots": 1, "shots_missed": 1, "end_tick": 9}],
+                [{"precision_shots": 1, "shots_missed": 1, "end_tick": 9,
+                  "outcome": "CLEAN_COMPLETE"}],
             ),
             "live-cell",
         )
@@ -39,6 +111,13 @@ class AgentTests(unittest.TestCase):
             effective_combat_mode(
                 "live-precision",
                 [{"precision_shots": 1, "outcome": "INCOMPLETE", "end_tick": 9}],
+            ),
+            "live-precision",
+        )
+        self.assertEqual(
+            effective_combat_mode(
+                "live-precision",
+                [{"precision_shots": 1, "outcome": "EXCLUDED_CONTAMINATED", "end_tick": 9}],
             ),
             "live-precision",
         )
@@ -1467,6 +1546,23 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(mem.traffic.ingress_queue[:2], ("retreat", "carrier"))
         self.assertEqual(plan.unit_actions["retreat"]["type"], "MOVE")
         self.assertEqual(plan.unit_actions["carrier"], {"type": "WAIT"})
+
+    def test_remote_ingress_head_does_not_block_first_local_carrier(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        remote = {"kind": "UNIT", "id": "remote", "controlled": True,
+                  "position": [20, 0], "unit_type": "WORKER", "cargo": 0, "hp": 2}
+        local = {"kind": "UNIT", "id": "local", "controlled": True,
+                 "position": [3, 0], "unit_type": "WORKER", "cargo": 1, "hp": 2}
+        memory = ExplorationMemory()
+        memory.route_core = (0, 0)
+        memory.route_core_id = "core"
+        memory.safe_retreat_workers.add("remote")
+        memory.traffic.ingress_queue = ("remote", "local")
+        state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 5, "population": 2,
+            "objects": [core, remote, local], "events": []})
+        plan = economy_plan(state, memory)
+        self.assertEqual(plan.unit_actions["local"], {"type": "MOVE", "direction": "LEFT"})
+        self.assertEqual(plan.unit_actions["remote"]["type"], "MOVE")
 
     def test_defense_restricts_vanguard_and_ranger_to_core_local_economy_protection(self):
         core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}

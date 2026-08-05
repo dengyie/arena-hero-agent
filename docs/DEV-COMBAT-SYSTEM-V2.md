@@ -1,6 +1,6 @@
 # DEV: Arena Combat System V2
 
-- Status: DESIGN READY, implementation pending approval
+- Status: IMPLEMENTED; staged live rollout and clean combat acceptance remain evidence-gated
 - Date: 2026-08-05
 - Repository: `/Users/mango/project/arena-hero-agent`
 - Reference implementation reviewed: `VelvetEvening/Arena-Crazy-Attack@88083db`
@@ -65,6 +65,25 @@ At design time:
 - Population 0-19 has zero upkeep; 20 starts tier 1.
 - Current private state is a complete replacement. Enemy Units outside vision
   are unknown; remembered positions are not current targeting facts.
+
+### 2.3 Authoritative operations contract
+
+HTTP `202` is not final per-actor authority when multiple source plans exist for
+one Tick. The Agent collects all same-Tick `received` rows through the next Tick
+boundary, merges them with MANUAL per-actor/Core precedence, and only then
+confirms movement edges, combat submissions, or combat spawn acceptance. A
+MANUAL action is never Agent evidence even when its payload is byte-identical.
+
+Core ingress has a stable global fairness queue but a local movement token: the
+first queued member currently within `CORE_INGRESS_RADIUS` advances. A remote
+queue head may keep approaching, but cannot hold all local carriers indefinitely.
+Workers already on Core execute DEPOSIT/HEAL before ingress gating.
+
+The JSONL journal rotates before 32 MiB with bounded backups. Evaluators scan
+rotated segments oldest-to-newest and deduplicate server events by `event_id`.
+Normal WebSocket closure reconnects in-process; permanent authentication rejection
+remains a stop. Source-directory deployment restores the pre-sync managed tree
+and Supervisor configuration if post-sync verification or restart fails.
 
 ## 3. Reference-project deep review
 

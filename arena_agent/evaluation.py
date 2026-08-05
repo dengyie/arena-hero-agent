@@ -8,20 +8,26 @@ from typing import Any
 def evaluate_combat_session(journal_path: Path | str, session: str) -> dict[str, Any]:
     plans: dict[int, dict[str, Any]] = {}
     received: set[int] = set()
-    with Path(journal_path).open(encoding="utf-8", errors="replace") as journal:
-        for line in journal:
-            try:
-                row = json.loads(line)
-            except (TypeError, ValueError):
-                continue
-            if row.get("session") != session:
-                continue
-            if row.get("event") == "plan" and isinstance(row.get("tick"), int):
-                plans[row["tick"]] = row
-            elif row.get("event") == "received":
-                tick = (row.get("data") or {}).get("tick")
-                if isinstance(tick, int):
-                    received.add(tick)
+    base = Path(journal_path)
+    paths = [path for path in [
+        *(base.with_name(f"{base.name}.{index}") for index in range(16, 0, -1)),
+        base,
+    ] if path.exists()]
+    for path in paths:
+        with path.open(encoding="utf-8", errors="replace") as journal:
+            for line in journal:
+                try:
+                    row = json.loads(line)
+                except (TypeError, ValueError):
+                    continue
+                if row.get("session") != session:
+                    continue
+                if row.get("event") == "plan" and isinstance(row.get("tick"), int):
+                    plans[row["tick"]] = row
+                elif row.get("event") == "received":
+                    tick = (row.get("data") or {}).get("tick")
+                    if isinstance(tick, int):
+                        received.add(tick)
 
     resolved = sorted(
         tick for tick, row in plans.items()
@@ -29,12 +35,18 @@ def evaluate_combat_session(journal_path: Path | str, session: str) -> dict[str,
     )
     eligible = 0
     event_types: dict[str, int] = {}
+    seen_event_ids: set[str] = set()
     episodes_by_key: dict[str, dict[str, Any]] = {}
     for tick in resolved:
         state = plans[tick].get("state") or {}
         if state.get("metric_window_eligible") is True:
             eligible += 1
         for event in state.get("events") or []:
+            event_id = str(event.get("event_id", ""))
+            if event_id and event_id in seen_event_ids:
+                continue
+            if event_id:
+                seen_event_ids.add(event_id)
             kind = event.get("event_type")
             if kind:
                 event_types[kind] = event_types.get(kind, 0) + 1

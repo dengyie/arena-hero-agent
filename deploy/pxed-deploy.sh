@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_URL="https://github.com/arena-hero/arena-hero-agent.git"
+REPO_URL="https://github.com/dengyie/arena-hero-agent.git"
 APP_DIR="${ARENA_HERO_APP_DIR:-/data/arena-hero-agent}"
 ENV_FILE="${ARENA_HERO_ENV_FILE:-$APP_DIR/.env.protected}"
 SUPERVISOR_CONF="${ARENA_HERO_SUPERVISOR_CONF:-/personal/pxed/supervisor-arena-hero.conf}"
@@ -10,6 +10,30 @@ MODE="dry-run"
 COMBAT_MODE="shadow"
 SOURCE_DIR=""
 PREPARE_ONLY=0
+LAST_BACKUP=""
+SYNC_APPLIED=0
+MANAGED_PATHS=(arena_agent tests docs deploy scripts README.md requirements.txt)
+
+restore_sync_on_error() {
+  local status=$?
+  if [[ "$SYNC_APPLIED" -eq 1 && -n "$LAST_BACKUP" && -d "$LAST_BACKUP" ]]; then
+    for path in "${MANAGED_PATHS[@]}"; do
+      rm -rf "$APP_DIR/$path"
+      [[ -e "$LAST_BACKUP/$path" ]] && cp -a "$LAST_BACKUP/$path" "$APP_DIR/$path"
+    done
+    if [[ -e "$LAST_BACKUP/supervisor-arena-hero.conf" ]]; then
+      cp -a "$LAST_BACKUP/supervisor-arena-hero.conf" "$SUPERVISOR_CONF"
+    fi
+    if [[ "$PREPARE_ONLY" -eq 0 ]] && command -v supervisorctl >/dev/null 2>&1; then
+      supervisorctl -c "$SUPERVISOR_ROOT" reread >/dev/null 2>&1 || true
+      supervisorctl -c "$SUPERVISOR_ROOT" update >/dev/null 2>&1 || true
+      supervisorctl -c "$SUPERVISOR_ROOT" restart arena-hero-agent >/dev/null 2>&1 || true
+    fi
+    echo "deployment failed; restored managed paths from $LAST_BACKUP" >&2
+  fi
+  exit "$status"
+}
+trap restore_sync_on_error ERR
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -41,12 +65,14 @@ sync_source_dir() {
   backup_root="${ARENA_HERO_BACKUP_ROOT:-$(dirname "$APP_DIR")/arena-hero-agent-backups}"
   backup="$backup_root/$(date +%Y%m%d%H%M%S)-$$-${COMBAT_MODE}"
   mkdir -p "$backup"
-  for path in arena_agent tests docs deploy scripts README.md requirements.txt; do
+  for path in "${MANAGED_PATHS[@]}"; do
     [[ -e "$APP_DIR/$path" ]] && cp -a "$APP_DIR/$path" "$backup/"
     rm -rf "$APP_DIR/$path"
     [[ -e "$source/$path" ]] && cp -a "$source/$path" "$APP_DIR/$path"
   done
   [[ -e "$SUPERVISOR_CONF" ]] && cp -a "$SUPERVISOR_CONF" "$backup/supervisor-arena-hero.conf"
+  LAST_BACKUP="$backup"
+  SYNC_APPLIED=1
   echo "backup=$backup"
 }
 
@@ -90,6 +116,7 @@ fi
 chmod 600 "$SUPERVISOR_CONF"
 
 if [[ "$PREPARE_ONLY" -eq 1 ]]; then
+  SYNC_APPLIED=0
   echo "prepared app=$APP_DIR mode=$MODE combat_mode=$COMBAT_MODE"
   exit 0
 fi
@@ -98,3 +125,4 @@ supervisorctl -c "$SUPERVISOR_ROOT" reread
 supervisorctl -c "$SUPERVISOR_ROOT" update
 supervisorctl -c "$SUPERVISOR_ROOT" restart arena-hero-agent
 supervisorctl -c "$SUPERVISOR_ROOT" status arena-hero-agent
+SYNC_APPLIED=0

@@ -6,6 +6,7 @@ import tempfile
 import unittest
 
 from arena_agent.evaluation import evaluate_combat_session
+from arena_agent.journal import Journal
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +14,33 @@ CLI = ROOT / "scripts" / "evaluate-combat-v2.py"
 
 
 class CombatEvaluationTests(unittest.TestCase):
+    def test_journal_rotates_and_evaluator_reads_receipt_from_backup(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "arena.jsonl"
+            journal = Journal(path, max_bytes=260, backups=2)
+            journal.write("plan", session="rotated", tick=1, result={"status": 202},
+                          state={"metric_window_eligible": True, "events": [],
+                                 "phase_evaluation": {"clean_combat_episodes": []}})
+            journal.write("received", session="rotated", data={"tick": 1})
+            journal.write("padding", session="other", value="x" * 240)
+            self.assertTrue(path.with_name("arena.jsonl.1").exists())
+            result = evaluate_combat_session(path, "rotated")
+            self.assertEqual(result["resolved_ticks"], 1)
+
+    def test_evaluator_deduplicates_repeated_event_ids(self):
+        event = {"event_id": "same", "event_type": "SHOT_HIT"}
+        rows = []
+        for tick in (1, 2):
+            rows.extend([
+                {"event": "plan", "session": "dedupe", "tick": tick,
+                 "result": {"status": 202},
+                 "state": {"metric_window_eligible": False, "events": [event],
+                           "phase_evaluation": {"clean_combat_episodes": []}}},
+                {"event": "received", "session": "dedupe", "data": {"tick": tick}},
+            ])
+        result = evaluate_combat_session(self.write_rows(rows), "dedupe")
+        self.assertEqual(result["event_types"].get("SHOT_HIT"), 1)
+
     def write_rows(self, rows):
         temp = tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False)
         with temp:

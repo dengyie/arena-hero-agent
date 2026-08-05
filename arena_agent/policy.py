@@ -1273,6 +1273,12 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None, *,
         for worker, target, kind in desired.values() if kind in {"RETURN_CORE", "RETURN_SAFE"}
     ] if state.core_position else []
     memory.traffic.reconcile_ingress_queue(ingress_candidates)
+    ingress_distances = {worker_id: distance for worker_id, _, distance in ingress_candidates}
+    local_ingress_head = next(
+        (worker_id for worker_id in memory.traffic.ingress_queue
+         if ingress_distances.get(worker_id, CORE_INGRESS_RADIUS + 1) <= CORE_INGRESS_RADIUS),
+        None,
+    )
 
     for worker, target, kind in sorted(desired.values(), key=lambda item: traffic_priority(item[0], state.core_position)):
         if worker.position == target:
@@ -1290,8 +1296,8 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None, *,
                 memory.traffic.holds[worker.id] = "RETURN_SAFE_AT_CORE"
                 primary_state, primary_target = "RETURN_SAFE", target
             continue
-        if (kind in {"RETURN_CORE", "RETURN_SAFE"} and memory.traffic.ingress_queue
-                and worker.id != memory.traffic.ingress_queue[0]
+        if (kind in {"RETURN_CORE", "RETURN_SAFE"} and local_ingress_head is not None
+                and worker.id != local_ingress_head
                 and state.core_position is not None
                 and abs(worker.position[0] - state.core_position[0]) + abs(worker.position[1] - state.core_position[1]) <= CORE_INGRESS_RADIUS):
             actions[worker.id] = {"type": "WAIT"}
