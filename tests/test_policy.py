@@ -781,19 +781,19 @@ class AgentTests(unittest.TestCase):
         self.assertNotEqual(p.unit_actions["worker"], {"type": "MOVE", "direction": "RIGHT"})
         self.assertIn(p.unit_actions["worker"]["type"], {"MOVE", "WAIT"})
 
-    def test_traffic_reserves_shared_destination(self):
-        s = snapshot_from_state(1, {"status": "ACTIVE", "resources": 5, "population": 2,
-            "objects": [
-                {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]},
-                {"kind": "UNIT", "id": "worker-a", "controlled": True,
-                 "position": [0, 1], "unit_type": "WORKER", "cargo": 0},
-                {"kind": "UNIT", "id": "worker-b", "controlled": True,
-                 "position": [2, 1], "unit_type": "WORKER", "cargo": 0},
-                {"kind": "RESOURCE", "positions": [[1, 1]]},
-            ], "events": []})
-        p = economy_plan(s, ExplorationMemory())
-        moves = [action for action in p.unit_actions.values() if action == {"type": "MOVE", "direction": "RIGHT"}]
-        self.assertLessEqual(len(moves), 1)
+    def test_two_friendly_moves_may_fill_two_slots_of_empty_destination(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        carrier = {"kind": "UNIT", "id": "carrier", "controlled": True,
+                   "position": [2, 0], "unit_type": "WORKER", "cargo": 1, "hp": 2}
+        guard = {"kind": "UNIT", "id": "guard", "controlled": True,
+                 "position": [1, 1], "unit_type": "VANGUARD", "cargo": 0, "hp": 3}
+        state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 5, "population": 2,
+            "objects": [core, carrier, guard], "events": []})
+        plan = economy_plan(state, ExplorationMemory(), combat_mode="positioning")
+        self.assertEqual(plan.unit_actions["carrier"], {"type": "MOVE", "direction": "LEFT"})
+        self.assertEqual(plan.unit_actions["guard"], {"type": "MOVE", "direction": "UP"})
+        self.assertEqual(step_position(carrier["position"], "LEFT"), (1, 0))
+        self.assertEqual(step_position(guard["position"], "UP"), (1, 0))
 
     def test_snapshot_parses_current_unit_hp(self):
         s = snapshot_from_state(1, {"status": "ACTIVE", "resources": 5, "population": 1,
@@ -1742,6 +1742,26 @@ class AgentTests(unittest.TestCase):
         )
         self.assertEqual(blocked.policy_state, "CORE_FULL_EXTERNAL_CAP_HOLD")
         self.assertIsNone(blocked.core_action)
+
+    def test_core_full_evictor_may_share_singly_occupied_friendly_adjacent_cell(self):
+        memory = ExplorationMemory()
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        leader = {"kind": "UNIT", "id": "a-leader", "controlled": True,
+                  "position": [0, 0], "unit_type": "WORKER", "cargo": 1}
+        evictor = {"kind": "UNIT", "id": "z-evictor", "controlled": True,
+                   "position": [0, 0], "unit_type": "WORKER", "cargo": 1}
+        adjacent = [
+            {"kind": "UNIT", "id": f"adjacent-{index}", "controlled": True,
+             "position": position, "unit_type": "WORKER", "cargo": 0}
+            for index, position in enumerate(([0, -1], [0, 1], [-1, 0], [1, 0]))
+        ]
+        full = {"event_id": "full-share", "event_type": "DEPOSIT_FAILED",
+                "reason_code": "CORE_RESOURCE_FULL", "actor_id": "a-leader", "position": [0, 0]}
+        state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 30, "population": 6,
+            "objects": [core, leader, evictor, *adjacent], "events": [full]})
+        plan = economy_plan(state, memory)
+        self.assertEqual(plan.policy_state, "CORE_FULL_EVICT")
+        self.assertEqual(plan.unit_actions["z-evictor"], {"type": "MOVE", "direction": "UP"})
 
     def test_external_recovery_below_population_ceiling_can_spawn(self):
         mem = ExplorationMemory()

@@ -862,31 +862,47 @@ def traffic_priority(worker: Unit, core: Position | None) -> tuple[int, str]:
     return 2, worker.id
 
 
-def movement_blocked_cells(state: Snapshot, moving_unit_id: str | None = None) -> set[Position]:
-    """Cells with no legal friendly capacity under the current v0.13 snapshot."""
+def friendly_cell_loads(state: Snapshot) -> Counter[Position]:
     loads: Counter[Position] = Counter()
     if state.core_position is not None:
         loads[state.core_position] += 1
-    for unit in state.units:
-        if unit.id != moving_unit_id:
-            loads[unit.position] += 1
+    loads.update(unit.position for unit in state.units)
+    return loads
+
+
+def movement_blocked_cells(state: Snapshot, moving_unit_id: str | None = None,
+                           reserved_arrivals: Counter[Position] | None = None,
+                           reserved_departures: Counter[Position] | None = None) -> set[Position]:
+    """Cells with no legal friendly capacity under the current v0.13 snapshot."""
+    loads = friendly_cell_loads(state)
+    for cell, count in (reserved_departures or {}).items():
+        loads[cell] -= count
+    for cell, count in (reserved_arrivals or {}).items():
+        loads[cell] += count
+    if moving_unit_id is not None:
+        moving = next((unit for unit in state.units if unit.id == moving_unit_id), None)
+        if moving is not None:
+            loads[moving.position] -= 1
     blocked = {cell for cell, load in loads.items() if load >= 2}
     blocked.update(enemy.position for enemy in state.visible_enemies)
     return blocked
 
 
 def choose_traffic_move(worker: Unit, target: Position, state: Snapshot, obstacles: frozenset[Position],
-                         reserved_destinations: set[Position],
+                         reserved_arrivals: Counter[Position],
+                         reserved_departures: Counter[Position],
                          reserved_edges: set[tuple[Position, Position]], memory: ExplorationMemory) -> PathResult:
     dynamic_cells = {cell for cell, until in memory.traffic.blocked_cells.items() if until > state.tick}
     blockers = obstacles | dynamic_cells
-    occupied = movement_blocked_cells(state, worker.id)
+    occupied = movement_blocked_cells(
+        state, worker.id, reserved_arrivals, reserved_departures,
+    )
     candidates: list[tuple[int, int, str, PathResult]] = []
     for rank, direction in enumerate(DIRECTIONS):
         if memory.traffic.is_edge_blocked(worker.id, worker.position, direction, state.tick):
             continue
         nxt = step_position(worker.position, direction)
-        if nxt in blockers or nxt in occupied or nxt in reserved_destinations or (nxt, worker.position) in reserved_edges:
+        if nxt in blockers or nxt in occupied or (nxt, worker.position) in reserved_edges:
             continue
         path = plan_path(nxt, {target}, blockers, occupied)
         if path.status in {"FOUND", "START_AT_GOAL"}:
@@ -975,7 +991,8 @@ def _combat_proposals(state: Snapshot, memory: ExplorationMemory,
 def _apply_defender_movement(state: Snapshot, memory: ExplorationMemory,
                              actions: dict[str, dict[str, Any]],
                              proposals: dict[str, dict[str, Any]],
-                             reserved_destinations: set[Position],
+                             reserved_arrivals: Counter[Position],
+                             reserved_departures: Counter[Position],
                              reserved_edges: set[tuple[Position, Position]],
                              obstacles: frozenset[Position]) -> None:
     slots = guard_slots(state.core_position, obstacles) if state.core_position is not None else ()
@@ -1038,7 +1055,8 @@ def _apply_defender_movement(state: Snapshot, memory: ExplorationMemory,
             proposal["candidate_cell"] = list(target)
 
         move = choose_traffic_move(unit, target, state, obstacles,
-                                   reserved_destinations, reserved_edges, memory)
+                                   reserved_arrivals, reserved_departures,
+                                   reserved_edges, memory)
         if move.direction is None:
             actions[unit.id] = {"type": "WAIT"}
             proposal["state"] = "BLOCKED"
@@ -1051,7 +1069,8 @@ def _apply_defender_movement(state: Snapshot, memory: ExplorationMemory,
         proposal["path_status"] = move.status
         proposal["path_length"] = move.path_length
         proposal["path_nodes"] = move.explored_nodes
-        reserved_destinations.add(destination)
+        reserved_departures[unit.position] += 1
+        reserved_arrivals[destination] += 1
         reserved_edges.add((unit.position, destination))
         memory.traffic.mark_planned_move(unit.id, unit.position, move.direction)
 
@@ -1107,7 +1126,9 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None, *,
                     if decision["proposed_action"].get("type") in {"SWEEP", "SHOOT"}:
                         decision["proposed_action"] = {"type": "WAIT"}
                         decision["reason"] = "ATTACKS_DISABLED"
-            _apply_defender_movement(state, memory, actions, combat_decisions, set(), set(), obstacles)
+            _apply_defender_movement(
+                state, memory, actions, combat_decisions, Counter(), Counter(), set(), obstacles,
+            )
         core_action = None
         if combat_mode in COMBAT_PRODUCTION_MODES:
             combat_spawn = memory.combat.choose_spawn(
@@ -1128,7 +1149,8 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None, *,
         unit.id: unit.position
         for unit in (state.units if combat_mode in COMBAT_MOVEMENT_MODES else state.workers)
     }
-    reserved_destinations: set[Position] = set()
+    reserved_arrivals: Counter[Position] = Counter()
+    reserved_departures: Counter[Position] = Counter()
     reserved_edges: set[tuple[Position, Position]] = set()
     desired: dict[str, tuple[Unit, Position, str]] = {}
     core_action: dict[str, Any] | None = None
@@ -1154,11 +1176,19 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None, *,
             )
             recovery_ceiling_reached = state.population >= MAX_EXTERNAL_RECOVERY_POPULATION
             if actor is evictor or recovery_allowed:
-                occupied = {pos for ident, pos in positions.items() if ident != actor.id}
-                direction = next((d for d in DIRECTIONS if step_position(actor.position, d) not in obstacles | occupied), None)
+                blocked = movement_blocked_cells(
+                    state, actor.id, reserved_arrivals, reserved_departures,
+                )
+                direction = next(
+                    (d for d in DIRECTIONS
+                     if step_position(actor.position, d) not in obstacles | blocked),
+                    None,
+                )
                 if direction:
                     actions[actor.id] = {"type": "MOVE", "direction": direction}
-                    reserved_destinations.add(step_position(actor.position, direction))
+                    destination = step_position(actor.position, direction)
+                    reserved_departures[actor.position] += 1
+                    reserved_arrivals[destination] += 1
                     reserved_edges.add((actor.position, step_position(actor.position, direction)))
                     if actor is evictor:
                         return _plan(actions, memory, policy_state="CORE_FULL_EVICT", target=state.core_position)
@@ -1179,7 +1209,8 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None, *,
                             )
                     if recovery_ceiling_reached:
                         actions[actor.id] = {"type": "WAIT"}
-                        reserved_destinations.clear()
+                        reserved_arrivals.clear()
+                        reserved_departures.clear()
                         reserved_edges.clear()
                     else:
                         core_action = {"type": "SPAWN", "unit_type": "WORKER"}
@@ -1267,14 +1298,16 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None, *,
             memory.traffic.holds[worker.id] = "CORE_INGRESS_HOLD"
             continue
         path = choose_traffic_move(worker, target, state, obstacles,
-                                   reserved_destinations, reserved_edges, memory)
+                                   reserved_arrivals, reserved_departures,
+                                   reserved_edges, memory)
         if path.direction is None:
             actions[worker.id] = {"type": "WAIT"}
             memory.traffic.holds[worker.id] = path.status
             continue
         destination = step_position(worker.position, path.direction)
         actions[worker.id] = {"type": "MOVE", "direction": path.direction}
-        reserved_destinations.add(destination)
+        reserved_departures[worker.position] += 1
+        reserved_arrivals[destination] += 1
         reserved_edges.add((worker.position, destination))
         memory.traffic.mark_planned_move(worker.id, worker.position, path.direction)
         if kind == "RETURN_CORE":
@@ -1293,7 +1326,8 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None, *,
                     decision["proposed_action"] = {"type": "WAIT"}
                     decision["reason"] = "ATTACKS_DISABLED"
         _apply_defender_movement(state, memory, actions, combat_decisions,
-                                 reserved_destinations, reserved_edges, obstacles)
+                                 reserved_arrivals, reserved_departures,
+                                 reserved_edges, obstacles)
 
     if core_action is None:
         core_action = choose_core_defense_action(state, memory)

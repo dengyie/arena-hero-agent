@@ -355,11 +355,14 @@ existing per-Tick reservation surface so Workers and defenders share:
 The authoritative v0.13 stacking rule is capacity two occupying entities per
 cell. A friendly Unit may enter a normal cell containing one friendly Unit; a
 Core itself consumes one slot, so Core + one Unit is full. Two friendly entities,
-any currently visible enemy occupant, obstacles, and same-Tick destination
-reservations remain blockers. Path search therefore blocks only full/enemy
-cells, not every occupied cell. A carrying Worker already sharing the receptive
-Core cell submits `DEPOSIT` before Core-ingress queue holds are considered; the
-queue serializes movement into the Core, not actions by an already-arrived Unit.
+any currently visible enemy occupant, and obstacles remain blockers. Shared
+reservations track current load minus planned departures plus planned arrivals:
+an empty cell may receive two friendly movers, a singly occupied friendly cell
+may receive one, and a successfully vacated slot may be used by a dependency
+follower. Path search therefore blocks only effectively full/enemy cells, not
+every occupied cell. A carrying Worker already sharing the receptive Core cell
+submits `DEPOSIT` before Core-ingress queue holds are considered; the queue
+serializes movement into the Core, not actions by an already-arrived Unit.
 
 Priority remains:
 
