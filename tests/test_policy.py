@@ -255,6 +255,24 @@ class AgentTests(unittest.TestCase):
         self.assertNotEqual(plan.unit_actions["ranger"]["type"], "SHOOT")
         self.assertEqual(plan.combat_decisions["ranger"]["reason"], "RANGER_FIRE_FUSED")
 
+    def test_v2_ranger_fire_allows_complete_population_20_squad_but_not_21(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        ranger = {"kind": "UNIT", "id": "ranger", "controlled": True,
+                  "position": [0, 1], "unit_type": "RANGER", "cargo": 0, "hp": 2}
+        enemy = {"kind": "UNIT", "id": "enemy", "controlled": False,
+                 "position": [0, 3], "unit_type": "WORKER", "hp": 2}
+        state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 80, "population": 20,
+            "upkeep_next_tick": 1, "objects": [core, ranger, enemy], "events": []})
+        plan = economy_plan(state, ExplorationMemory(), combat_mode="live-precision")
+        self.assertEqual(plan.unit_actions["ranger"], {
+            "type": "SHOOT", "target_id": "enemy", "expected_cell": [0, 3],
+        })
+        over = snapshot_from_state(2, {"status": "ACTIVE", "resources": 80, "population": 21,
+            "upkeep_next_tick": 1, "objects": [core, ranger, enemy], "events": []})
+        over_plan = economy_plan(over, ExplorationMemory(), combat_mode="live-precision")
+        self.assertNotEqual(over_plan.unit_actions["ranger"].get("type"), "SHOOT")
+        self.assertEqual(over_plan.combat_decisions["ranger"]["reason"], "RANGER_FIRE_FUSED")
+
     def test_v2_defenders_respond_only_to_current_core_zone_threat(self):
         core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
         guard = {"kind": "UNIT", "id": "guard", "controlled": True,
@@ -1579,6 +1597,31 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(plan.policy_state, "CORE_FULL_EXTERNAL_CAP_HOLD")
         self.assertIsNone(plan.core_action)
         self.assertEqual(plan.unit_actions["worker-0"], {"type": "WAIT"})
+
+    def test_core_full_population_19_can_atomically_evict_carrier_and_spawn_missing_ranger(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True,
+                "position": [0, 0], "hp": 5, "shield": 5, "state": "NORMAL"}
+        workers = [
+            {"kind": "UNIT", "id": f"worker-{index}", "controlled": True,
+             "position": [0, 0] if index == 0 else [index + 1, 0],
+             "unit_type": "WORKER", "cargo": 1 if index == 0 else 0, "hp": 2}
+            for index in range(18)
+        ]
+        guard = {"kind": "UNIT", "id": "guard", "controlled": True,
+                 "position": [0, 2], "unit_type": "VANGUARD", "cargo": 0, "hp": 4}
+        full = {"event_id": "full-ranger-slot", "event_type": "DEPOSIT_FAILED",
+                "reason_code": "CORE_RESOURCE_FULL", "actor_id": "worker-0", "position": [0, 0]}
+        state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 95, "population": 19,
+            "upkeep_next_tick": 0, "objects": [core, *workers, guard], "events": [full]})
+        plan = economy_plan(state, ExplorationMemory(), combat_mode="live-sweep")
+        self.assertEqual(plan.policy_state, "CORE_FULL_COMBAT_CAPACITY_RECOVERY")
+        self.assertEqual(plan.unit_actions["worker-0"], {"type": "MOVE", "direction": "UP"})
+        self.assertEqual(plan.core_action, {"type": "SPAWN", "unit_type": "RANGER"})
+        blocked = economy_plan(
+            state, ExplorationMemory(), combat_mode="live-sweep", combat_production_guard=False,
+        )
+        self.assertEqual(blocked.policy_state, "CORE_FULL_EXTERNAL_CAP_HOLD")
+        self.assertIsNone(blocked.core_action)
 
     def test_external_recovery_below_population_ceiling_can_spawn(self):
         mem = ExplorationMemory()

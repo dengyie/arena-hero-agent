@@ -206,6 +206,12 @@ A defensive spawn requires all of:
 - no unexplained current-session population transition;
 - spawn order: Vanguard first, then Ranger.
 
+If population 19 is also Core-full and exactly one carrying Worker occupies the Core,
+the Ranger transaction is atomic in official resolution order: move that deterministic
+leader to a legal adjacent cell and submit Ranger SPAWN in the same Tick. Unit movement
+frees the Core slot before Core production; Ranger cost frees storage before the carrier
+returns to deposit. Failure to find a legal evacuation cell remains an explicit hold.
+
 `no unexplained current-session population transition` 的实现 hook 固定为：
 `__main__.py` 在 `record_population_transition()` 后，将
 `source_audit.unattributed_population_increases == 0` 作为本 Tick 的
@@ -224,6 +230,9 @@ perform exactly one Ranger transaction to population 20, provided Ranger cost pl
 20 resources of base reserve plus 20 Tick of tier-1 upkeep remain. Population 20
 is a hard Combat V2 ceiling and emits operator attention; Worker recovery remains
 separately capped by `MAX_EXTERNAL_RECOVERY_POPULATION = 19`.
+The completed population-20 squad may still use Ranger fire under the existing current-
+visibility, Core-full, cargo-threat, injury, cooldown, geometry, and stage-mode fuses;
+population 21+ suppresses Ranger fire and never opens further production.
 
 ### 5.3 Defensive zone and states
 

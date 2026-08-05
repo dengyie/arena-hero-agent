@@ -831,7 +831,7 @@ def ranger_fire_allowed(state: Snapshot, memory: ExplorationMemory, *, threatene
         return False
     return (
         not memory.core_full
-        and state.population < MAX_EXTERNAL_RECOVERY_POPULATION
+        and state.population <= COMBAT_POPULATION_CEILING
         and state.tick >= memory.ledger.combat_cooldown_until
         and not memory.ledger.worker_damage_ticks
     )
@@ -1115,7 +1115,7 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None, *,
                 and all(other.position != state.core_position for other in workers if other.id != actor.id)
             )
             recovery_ceiling_reached = state.population >= MAX_EXTERNAL_RECOVERY_POPULATION
-            if actor is evictor or (recovery_allowed and not recovery_ceiling_reached):
+            if actor is evictor or recovery_allowed:
                 occupied = {pos for ident, pos in positions.items() if ident != actor.id}
                 direction = next((d for d in DIRECTIONS if step_position(actor.position, d) not in obstacles | occupied), None)
                 if direction:
@@ -1124,10 +1124,30 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None, *,
                     reserved_edges.add((actor.position, step_position(actor.position, direction)))
                     if actor is evictor:
                         return _plan(actions, memory, policy_state="CORE_FULL_EVICT", target=state.core_position)
-                    core_action = {"type": "SPAWN", "unit_type": "WORKER"}
-                    policy_state = ("CORE_FULL_EXTERNAL_CAP_RECOVERY" if external_over_cap
-                                    else "CORE_FULL_RECOVERY")
-                    return _plan(actions, memory, policy_state=policy_state, target=state.core_position, core_action=core_action)
+                    if combat_mode in COMBAT_PRODUCTION_MODES:
+                        combat_spawn = memory.combat.choose_spawn(
+                            state, production_guard=combat_production_guard,
+                            core_full=False, core_occupied=False,
+                        )
+                        if combat_spawn is not None:
+                            memory.combat.request_spawn(combat_spawn, state.tick, state.units)
+                            return _plan(
+                                actions, memory,
+                                policy_state="CORE_FULL_COMBAT_CAPACITY_RECOVERY",
+                                target=state.core_position,
+                                core_action={"type": "SPAWN", "unit_type": combat_spawn},
+                                combat_decisions=combat_decisions,
+                            )
+                    if recovery_ceiling_reached:
+                        actions[actor.id] = {"type": "WAIT"}
+                        reserved_destinations.clear()
+                        reserved_edges.clear()
+                    else:
+                        core_action = {"type": "SPAWN", "unit_type": "WORKER"}
+                        policy_state = ("CORE_FULL_EXTERNAL_CAP_RECOVERY" if external_over_cap
+                                        else "CORE_FULL_RECOVERY")
+                        return _plan(actions, memory, policy_state=policy_state,
+                                     target=state.core_position, core_action=core_action)
         if (actor is leader and recovery_allowed
                 and state.population >= MAX_EXTERNAL_RECOVERY_POPULATION):
             return _plan(actions, memory, policy_state="CORE_FULL_EXTERNAL_CAP_HOLD",
