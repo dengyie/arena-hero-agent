@@ -41,7 +41,7 @@ sync_source_dir() {
   backup_root="${ARENA_HERO_BACKUP_ROOT:-$(dirname "$APP_DIR")/arena-hero-agent-backups}"
   backup="$backup_root/$(date +%Y%m%d%H%M%S)-$$-${COMBAT_MODE}"
   mkdir -p "$backup"
-  for path in arena_agent tests docs deploy README.md requirements.txt; do
+  for path in arena_agent tests docs deploy scripts README.md requirements.txt; do
     [[ -e "$APP_DIR/$path" ]] && cp -a "$APP_DIR/$path" "$backup/"
     rm -rf "$APP_DIR/$path"
     [[ -e "$source/$path" ]] && cp -a "$source/$path" "$APP_DIR/$path"

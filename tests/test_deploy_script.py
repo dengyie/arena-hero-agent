@@ -15,6 +15,8 @@ class DeployScriptTests(unittest.TestCase):
         source = base / "source"
         shutil.copytree(ROOT / "arena_agent", source / "arena_agent")
         shutil.copytree(ROOT / "deploy", source / "deploy")
+        (source / "scripts").mkdir()
+        (source / "scripts" / "evaluate-combat-v2.py").write_text("print('ok')\n")
         (source / "tests").mkdir()
         (source / "tests" / "test_smoke.py").write_text(
             "import unittest\n\nclass SmokeTest(unittest.TestCase):\n"
@@ -55,6 +57,7 @@ class DeployScriptTests(unittest.TestCase):
             self.assertEqual((app / "private-note.txt").read_text(), "keep private\n")
             self.assertFalse((app / "arena_agent" / "stale.py").exists())
             self.assertTrue((app / "arena_agent" / "policy.py").exists())
+            self.assertTrue((app / "scripts" / "evaluate-combat-v2.py").exists())
             self.assertIn("--combat-mode production", supervisor.read_text())
 
     def test_invalid_combat_mode_is_rejected_before_sync(self):
