@@ -211,6 +211,9 @@ the Ranger transaction is atomic in official resolution order: move that determi
 leader to a legal adjacent cell and submit Ranger SPAWN in the same Tick. Unit movement
 frees the Core slot before Core production; Ranger cost frees storage before the carrier
 returns to deposit. Failure to find a legal evacuation cell remains an explicit hold.
+Static inventory reserve is not sufficient evidence for entering tier-1 upkeep: the
+preceding 20-Tick event ledger must contain at least 20 real `DEPOSIT_SUCCEEDED` events.
+Plans, HTTP 202, receipts, and starting inventory do not count as sustainable supply.
 
 `no unexplained current-session population transition` 的实现 hook 固定为：
 `__main__.py` 在 `record_population_transition()` 后，将
@@ -233,6 +236,11 @@ separately capped by `MAX_EXTERNAL_RECOVERY_POPULATION = 19`.
 The completed population-20 squad may still use Ranger fire under the existing current-
 visibility, Core-full, cargo-threat, injury, cooldown, geometry, and stage-mode fuses;
 population 21+ suppresses Ranger fire and never opens further production.
+At population 20, resources `<= COMBAT_RESERVE` activates `COMBAT_UPKEEP_FUSE` before
+normal actions: only the bound cargo-free home Ranger submits `SELF_DESTRUCT`, all other
+Units WAIT, and no Core action is sent. Unit self-destruction resolves before upkeep,
+returning to tier 0 before an unpaid deficit can damage a Worker. `current` and `shadow`
+never submit this fuse action.
 
 ### 5.3 Defensive zone and states
 
@@ -930,10 +938,13 @@ Combat V2 只有同时满足以下条件才能标记为完成：
   30 resolved Tick；Vanguard 仅移动 2 次后稳定 HOLD，样本内 477 次
   `UNIT_MOVE_SUCCEEDED`、5 次 `DEPOSIT_SUCCEEDED`、2 次 `HARVEST_SUCCEEDED`，
   attack=0、spawn=0、repeated failure=0、最大 reservation=17；
-- C11 当前只开放 `live-sweep`：session `454372837399` 已连续运行数百 resolved Tick，
-  最多当前可见 2 个敌人，但没有任何敌人进入 Vanguard 正交相邻格，因此 Vanguard 按
-  契约持续 WAIT，SWEEP submission/event=0；`live-precision`、`live-cell` 未开放，且
-  population=19（18 Worker + 1 Vanguard）没有合法 Ranger 人口位；
+- C11 当前只开放 `live-sweep`：session `454372837399` 的旧样本没有自然相邻
+  SWEEP；随后 session `a4fa3ca1eb3a` 完成唯一 Ranger 原子生产事务，但 tier-1
+  upkeep 供给不足，资源从 83 降至 0，Tick `55891-55892` 连续出现
+  `UPKEEP_PAID deficit=1`，远端 Worker `8cd0622d-...` HP `1→0`，population
+  自然回到 19。Ranger仍存活且role已绑定；该窗口确认一名friendly death，严禁作为
+  clean combat/ROI证据。production已新增20-Tick真实deposit供给门和upkeep fuse；
+  `live-precision`、`live-cell` 尚未开放；
 - C12 已增加可复现离线 evaluator `scripts/evaluate-combat-v2.py`。当前 session 实测
   resolved Tick 已超过 250，但 `eligible_resolved_ticks=0`、clean episodes=0，且缺
   sweep/precision/cell event coverage，因此 `strategy_quality_ready=false`；没有自然合法

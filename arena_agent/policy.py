@@ -123,7 +123,7 @@ class CombatMemory:
             self.home_ranger_id = by_type["RANGER"][0].id
 
     def choose_spawn(self, state: Snapshot, *, production_guard: bool, core_full: bool,
-                     core_occupied: bool) -> str | None:
+                     core_occupied: bool, recent_deposits: int) -> str | None:
         if (not production_guard or core_full or core_occupied or self.pending_spawn is not None
                 or state.tick < self.spawn_cooldown_until or state.core_position is None
                 or state.core_state not in {None, "NORMAL"} or state.population >= COMBAT_POPULATION_CEILING
@@ -138,6 +138,8 @@ class CombatMemory:
             return None
         cost = 10 if missing == "VANGUARD" else 12
         projected_upkeep = upkeep_for_population(state.population + 1)
+        if projected_upkeep and recent_deposits < projected_upkeep * COMBAT_UPKEEP_RESERVE_TICKS:
+            return None
         reserve = COMBAT_RESERVE + projected_upkeep * COMBAT_UPKEEP_RESERVE_TICKS
         return missing if state.resources - cost >= reserve else None
 
@@ -1044,6 +1046,20 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None, *,
     if state.status != "ACTIVE":
         return _plan({}, memory, policy_state="PAUSE")
 
+    if (combat_mode in COMBAT_PRODUCTION_MODES
+            and state.population >= COMBAT_POPULATION_CEILING
+            and state.resources <= COMBAT_RESERVE
+            and memory.combat.home_ranger_id is not None):
+        ranger = next(
+            (unit for unit in state.rangers
+             if unit.id == memory.combat.home_ranger_id and unit.cargo == 0),
+            None,
+        )
+        if ranger is not None:
+            actions = {unit.id: {"type": "WAIT"} for unit in state.units}
+            actions[ranger.id] = {"type": "SELF_DESTRUCT"}
+            return _plan(actions, memory, policy_state="COMBAT_UPKEEP_FUSE")
+
     threatened_worker_ids = threatened_workers(state)
     memory.safe_retreat_workers.update(
         worker_id for worker_id in threatened_worker_ids
@@ -1076,6 +1092,7 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None, *,
             combat_spawn = memory.combat.choose_spawn(
                 state, production_guard=combat_production_guard, core_full=memory.core_full,
                 core_occupied=any(unit.position == state.core_position for unit in state.units),
+                recent_deposits=len(memory.ledger.deposits),
             )
             if combat_spawn is not None:
                 core_action = {"type": "SPAWN", "unit_type": combat_spawn}
@@ -1128,6 +1145,7 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None, *,
                         combat_spawn = memory.combat.choose_spawn(
                             state, production_guard=combat_production_guard,
                             core_full=False, core_occupied=False,
+                            recent_deposits=len(memory.ledger.deposits),
                         )
                         if combat_spawn is not None:
                             memory.combat.request_spawn(combat_spawn, state.tick, state.units)
@@ -1263,6 +1281,7 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None, *,
         combat_spawn = memory.combat.choose_spawn(
             state, production_guard=combat_production_guard, core_full=memory.core_full,
             core_occupied=any(unit.position == state.core_position for unit in state.units),
+            recent_deposits=len(memory.ledger.deposits),
         )
         if combat_spawn is not None:
             core_action = {"type": "SPAWN", "unit_type": combat_spawn}
