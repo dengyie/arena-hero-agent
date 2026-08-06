@@ -1,6 +1,7 @@
 # DEV: Arena Combat System V2
 
-- Status: IMPLEMENTED; staged live rollout and clean combat acceptance remain evidence-gated
+- Status: IMPLEMENTED; Section 2.1 is the current status authority; staged live rollout
+  and clean combat acceptance remain evidence-gated
 - Date: 2026-08-05
 - Repository: `/Users/mango/project/arena-hero-agent`
 - Reference implementation reviewed: `VelvetEvening/Arena-Crazy-Attack@88083db`
@@ -9,20 +10,26 @@
 
 ## 1. Problem statement
 
-The current Agent has a verified economy, bounded exploration, traffic control,
-Core ingress, conservative Core-local attacks, combat event accounting, and a
-friendly-loss fuse. It does not yet have a complete combat product.
+The original design-time baseline had a verified economy, bounded exploration,
+traffic control, Core ingress, and no complete combat product. The implemented
+Agent now also has guarded Vanguard/Ranger lifecycle, Core-local defender
+positioning, current-state combat proposals, v0.13 cell payloads, combat event
+accounting, and a friendly-loss fuse. Live combat-event evidence remains
+outstanding.
 
-Current combat behavior is limited to:
+Current implemented combat boundary:
 
 - existing Vanguard: SWEEP only when an enemy is currently visible in an
   adjacent cell and economic risk is present near the Core;
 - existing Ranger: precision SHOOT only at a currently visible legal target,
   only while the Ranger is already within the Core guard radius;
-- no Vanguard/Ranger production;
-- no defender positioning, role assignment, formation, response movement, or
-  target-free v0.13 cell fire;
-- no clean live combat episode in the latest sessions.
+- Vanguard/Ranger production and role assignment are implemented and deployed;
+- defender positioning is Core-local and uses shared Worker reservations;
+- visible threats can trigger Worker safe-retreat and Core-local guard decisions,
+  but defenders do not escort remote Workers or pursue across the map;
+- target-free v0.13 cell-fire payloads are implemented but no live cell-fire
+  event has yet been observed;
+- no clean live combat episode has been observed in the latest sessions.
 
 The target is a defensive combat system that can actually create and operate a
 small guard force, protect the economy, and produce event-level combat evidence
@@ -33,16 +40,30 @@ expeditions, or uncontrolled population growth.
 
 ### 2.1 Current repository and live state
 
-At design time:
+Current authoritative cutoff (2026-08-06):
+
+- repository tip and deployed commit: `7ff47cc`;
+- local and pxed staging suite: 149 `unittest` tests pass; compile, deploy-shell
+  syntax, and diff checks pass;
+- production Supervisor mode: configured `live-precision`, PID `124297` at deploy;
+- session `7ca42f757d04`: 56 resolved Tick, 55
+  `combat_metric_eligible=true`, 0 `economy_metric_eligible`, 4 real
+  `DEPOSIT_SUCCEEDED`, 0 move failure, 0 friendly death/cargo loss;
+- the 50 combat-eligible Tick gate is satisfied; C12 remains blocked only by the
+  three real clean combat episodes and SWEEP/precision/cell-intercept coverage;
+- economy ROI remains ineligible because the baseline has 17 Workers and MANUAL
+  Worker actions continue. Combat eligibility does not override that conclusion.
+
+Historical design-time baseline (superseded; retained for provenance):
 
 - repository tip: `a4ed71f`;
 - local suite: 89 `unittest` tests pass;
-- current live sessions have only Workers, population 15-17;
+- inspected design-time sessions had only Workers, population 15-17;
 - latest inspected session had same-session `state -> HTTP 202 -> received`,
   stable RSS near 20 MiB, real harvest/deposit events, and no combat events;
-- the current baseline is externally over the ordinary Worker cap, therefore
-  `metric_window_eligible=false`; it can prove protocol and action outcomes but
-  cannot prove clean combat ROI.
+- the design-time baseline was externally over the ordinary Worker cap, therefore
+  `economy_metric_eligible=false`; it can prove protocol and action outcomes but
+  cannot prove clean economy ROI. Combat eligibility is evaluated separately.
 
 ### 2.2 Official rules that constrain the design
 
@@ -238,8 +259,8 @@ A defensive spawn requires all of:
 - no Core-full transaction or blocked carrying Worker at a full Core;
 - Core cell has a legal slot after planned movement;
 - no pending spawn transaction or recent spawn failure cooldown;
-- population remains `<= 20` after spawn; population 19 may spawn only the missing
-  Ranger when a Vanguard is already role-bound, and population 20+ may never spawn;
+- population remains `<= 20` after spawn; ordinary production is capped at 19,
+  while the sole guarded exception is the missing-Ranger transaction from 19 to 20;
 - `upkeep_next_tick == 0` before the transaction; projected upkeep uses the official
   triangular tier formula and reserves 20 future Tick payments in addition to
   `COMBAT_RESERVE = 20`;
@@ -298,7 +319,7 @@ Squad states:
 UNAVAILABLE  no defender of required type
 ASSEMBLE     move friendly defender toward an unreserved guard slot
 HOLD         guard slot reached, no current threat
-RESPOND      current enemy threatens Core/Worker or is inside engage radius
+RESPOND      current enemy threatens Core or is inside the Core-local engage radius
 ATTACK       legal SWEEP/SHOOT selected this Tick
 RECOVER      injured defender returns to Core for HEAL
 BLOCKED      bounded planner/reservation cannot produce a legal step
@@ -314,10 +335,11 @@ ring; they do not continue pursuit.
 Current-state-only priorities:
 
 1. enemy adjacent to owned Core;
-2. enemy within 3 of carrying or injured Worker;
-3. enemy within `ENGAGE_RADIUS` of Core;
-4. currently visible enemy Core inside the defensive zone;
-5. no defensive threat.
+2. enemy within `ENGAGE_RADIUS` of Core;
+3. currently visible enemy Core inside the Core-local defensive zone;
+4. an enemy within 3 of a carrying/injured Worker triggers Worker `RETURN_SAFE`
+   and Ranger safety fuses, but not remote defender escort;
+5. no Core-local defensive threat.
 
 Enemy Unit ownership remains unknown. Target scoring uses only current object
 kind, current unit type, current HP if legally visible, distance, attack
@@ -329,7 +351,7 @@ geometry, and economic proximity.
 if hp < 4 and at Core: HEAL
 elif hp < 4: move toward Core through shared reservations
 elif current enemy in adjacent cardinal cell: SWEEP best cell
-elif current defensive threat exists: move toward a legal adjacent attack cell
+elif current Core-local defensive threat exists: move toward a legal adjacent attack cell
 elif outside guard ring: move toward assigned guard slot
 else: WAIT
 ```
@@ -373,7 +395,7 @@ if hp < 2 and at Core: HEAL
 elif hp < 2: move toward Core
 elif high-confidence legal current-cell shot: SHOOT precision
 elif legal high-value intercept cell: SHOOT expected_cell without target_id
-elif defensive threat exists: move to the best legal firing cell
+elif Core-local defensive threat exists: move to the best legal firing cell
 elif outside assigned guard slot: move toward guard slot
 else: WAIT
 ```
@@ -467,9 +489,13 @@ No full state, token, enemy history, or owner identity is persisted.
 | defender damaged | enter RECOVER; Ranger fire fuse remains active |
 | defender killed | confirm only after next complete owned state omission |
 | Worker cargo dropped | long combat fuse and episode loss |
-| population reaches 19 | stop all combat production |
+| population reaches 19 | ordinary production stops; only the guarded, supply-proven missing-Ranger 19-to-20 transaction is allowed |
+| population reaches 20 | stop all further production; upkeep fuse may remove only the bound cargo-free Ranger |
 | Core full / carrier backlog | combat production and assembly yield to economy transaction |
-| source contamination | behavior continues from authoritative state; ROI excluded |
+| MANUAL Worker action | exclude Agent Worker attribution and economy ROI; Combat remains eligible if no bound defender/Core override |
+| MANUAL bound defender or Core action | behavior continues from authoritative state; this Tick is Combat-ineligible |
+| conflicting same-Tick AGENT receipts | mark the Tick non-authoritative; confirm no movement/combat/spawn/population/resource attribution |
+| duplicate identical AGENT receipts | idempotent; retain one authoritative plan |
 | path node cap | explicit bounded hold/backoff; no unbounded search |
 
 ## 7. File-level implementation plan
@@ -490,42 +516,58 @@ or unrelated service change.
 
 ## 8. Test matrix
 
-### Production
+The repository suite is larger than this contract matrix. These are the
+production-critical behaviors that must remain explicitly covered.
 
-1. population 17, healthy Core, reserve satisfied: Vanguard then Ranger, never 20;
-2. population 18: only missing defender may spawn;
-3. population 19: no spawn and operator-attention reason;
-4. Core full/carrier backlog/Core heal/shield repair beats combat spawn;
-5. accepted SPAWN without next-state Unit does not fabricate role assignment;
-6. spawn success/failure event sequence reconciles pending transaction exactly once.
+### Production and upkeep
 
-### Vanguard
+1. population 17 can produce Vanguard then Ranger and stop at 19;
+2. population 18 produces only the missing defender;
+3. population 19 cannot run ordinary production;
+4. population 19 may run exactly one missing-Ranger transaction only after the
+   real 20-deposit/20-Tick supply gate and reserve checks;
+5. population 20 requests no further production; population 21 is rejected;
+6. population-20 reserve pressure self-destructs only the bound cargo-free Ranger
+   before upkeep, never a Worker/Vanguard;
+7. Core-full/carrier backlog/Core heal/shield repair beats combat spawn;
+8. accepted SPAWN without event and next-state Unit never fabricates a role;
+9. spawn success/failure/event/state sequence reconciles exactly once.
 
-7. adjacent multi-hostile cell selects max-value SWEEP;
-8. distant threat produces bounded response movement, not attack;
-9. visibility loss returns to guard ring without stale pursuit;
-10. injured Vanguard returns and HEALs; fatal candidate never heals.
+### Combat and visibility
 
-### Ranger
+10. adjacent multi-hostile cell selects deterministic Vanguard SWEEP;
+11. only Core-local current threats produce bounded defender response movement;
+12. remote Worker threat triggers Worker retreat/safety fuse, not defender escort;
+13. visibility loss returns defenders to guard ring with no enemy history;
+14. injured defender returns and HEALs; fatal candidate never heals;
+15. current legal Ranger target produces precision payload;
+16. optional-target v0.13 intercept omits `target_id`;
+17. intermediate obstacle blocks fire; Units/Cores do not;
+18. local and distant Ranger gates are independent;
+19. hit/miss events update precision/intercept counters exactly once.
 
-11. current legal target produces precision shot;
-12. optional-target v0.13 intercept produces target-free cell shot;
-13. intermediate obstacle blocks both modes;
-14. Units/Cores do not block fire;
-15. one local and one distant Ranger are gated independently;
-16. carrying-Worker threat suppresses speculative fire;
-17. miss/hit events update separate precision/intercept counters.
+### Traffic, source authority, and observability
 
-### Coordination and safety
-
-18. carrying Worker reservation beats defender movement;
-19. defender cannot occupy Core ingress leader destination;
-20. two defenders cannot reserve the same final slot;
-21. dynamic combat move failure preserves role and changes step/holds;
-22. bounded search returns explicit hold at node cap;
-23. contaminated combat episode is excluded even when it later closes;
-24. current enemy disappears: no enemy ID/position remains in memory;
-25. complete plan contains an explicit action for every owned Unit.
+20. carrying Worker reservation beats defender movement;
+21. v0.13 capacity ledger allows two friendly entities but blocks Core+Unit/full
+    cells and current enemy occupants;
+22. two same-Tick movers can fill an empty two-slot cell;
+23. remote ingress head cannot block the first local carrier;
+24. local carrier outranks safe-retreat; same-class FIFO remains stable;
+25. local token with no Core-distance progress yields after four Ticks;
+26. dynamic move failure preserves target/role and uses bounded TTL;
+27. bounded search returns explicit hold at node cap;
+28. same-Tick AGENT/MANUAL receipts merge at the Tick boundary independent of
+    arrival order; byte-identical MANUAL action is never Agent evidence;
+29. conflicting AGENT receipts are non-authoritative; identical duplicates are
+    idempotent;
+30. Manual Worker contaminates economy only; Manual bound defender/Core
+    contaminates Combat;
+31. journal rotation, legacy gzip, cross-segment evaluator, and `event_id` dedupe
+    preserve counts;
+32. WebSocket normal close backs off/reconnects, resource changes close numerically,
+    enemy disappearance leaves no target memory, and every owned Unit has an
+    explicit action.
 
 ## 9. Rollout and acceptance
 
@@ -565,9 +607,10 @@ defender reservations.
 
 ### Stage 4: live attacks
 
-Enable SWEEP, precision fire, and target-free cell intercept. Require a bounded
-combat episode with submitted action, next-state hit/miss/sweep result, damage,
-loss accounting, and eight-Tick close.
+Enable attacks serially: Vanguard adjacent SWEEP first, then Ranger precision
+current-cell fire, then target-free cell intercept only after a clean precision
+episode closes. Each stage requires a bounded combat episode with submitted action,
+next-state hit/miss/sweep result, damage, loss accounting, and eight-Tick close.
 
 ### Maturity labels
 
@@ -576,10 +619,13 @@ loss accounting, and eight-Tick close.
 - `production-verified`: spawn event and owned state confirmed;
 - `positioning-verified`: movement events and economy noninterference confirmed;
 - `combat-event-verified`: real attack resolution observed;
-- `strategy-quality-verified`: clean eligible episode and economic/loss comparison.
+- `strategy-quality-verified`: three Combat-clean episodes, all required attack
+  coverage, at least 50 Combat-eligible resolved Tick, and acceptable loss/upkeep
+  outcomes. Economy ROI is reported separately.
 
-A contaminated live episode can reach `combat-event-verified`, never
-`strategy-quality-verified`.
+A Combat-contaminated episode can reach `combat-event-verified`, never
+`strategy-quality-verified`. An economy-contaminated but Combat-clean episode may
+participate in Combat strategy evaluation; it never makes economy ROI eligible.
 
 ## 10. Rollback
 
@@ -588,7 +634,7 @@ Rollback scope is only the V2 Arena files and `arena-hero-agent` process.
 Trigger rollback or stop Arena on:
 
 - repeated non-handoff command errors;
-- spawn retry storm or population crossing 19;
+- spawn retry storm, population crossing 20, or any production request at population 20+;
 - repeated defender/Worker reservation deadlock;
 - unbounded path work or rising RSS;
 - cargo/deposit regression attributable to defender movement;
@@ -622,9 +668,9 @@ C0 文档/基线冻结
                                           └─ C12 clean strategy evaluation
 ```
 
-C0-C7 是代码和本地验证任务；C8-C11 是分阶段线上任务；C12 只能在
-`metric_window_eligible=true` 的干净窗口完成。C9-C11 不得合并为一次线上
-发布。
+C0-C7 是代码和本地验证任务；C8-C11 是分阶段线上任务；C12使用
+`combat_metric_eligible=true`作为Combat Tick门，并独立报告
+`economy_metric_eligible`和经济ROI。C9-C11不得合并为一次线上发布。
 
 ### 11.2 C0：基线冻结与实现合同
 
@@ -632,7 +678,8 @@ C0-C7 是代码和本地验证任务；C8-C11 是分阶段线上任务；C12 只
 
 工作：
 
-- 固定实现基线 commit、当前 89 项测试结果和 Arena 当前 session 证据；
+- 固定实现基线 commit、历史89项测试结果和Arena历史session证据；当前实现
+  以Section 2.1的`7ff47cc`/149项测试为准；
 - 明确 `CombatMemory`、`Plan`、journal 字段和 task state 的向后兼容规则；
 - 为每个行为常量建立单一来源，禁止在 `policy.py`、`combat.py`、测试中
   分散复制；
@@ -727,20 +774,24 @@ C0-C7 是代码和本地验证任务；C8-C11 是分阶段线上任务；C12 只
 
 - 实现缺口顺序：Vanguard → Ranger；
 - 统一检查 Core NORMAL、Core slot、Core-full、current Core defense action、
-  pending spawn、cooldown、resources-after-cost >= 20、upkeep=0、population
-  after spawn <= 19；
+  pending spawn、cooldown、resources-after-cost >= 20 和 upkeep；
+- 普通生产要求 after-spawn population <= 19；唯一例外是已绑定 Vanguard、
+  缺失 Ranger、最近20 Tick有20次真实deposit且成本/基础reserve/20 Tick tier-1
+  upkeep均满足时的population 19-to-20 Ranger事务；
 - 生产只提交 Core action，不在同 Tick 猜测出生 Unit；
 - 接入 `CORE_SPAWN_SUCCEEDED`、`CORE_SPAWN_FAILED` 和 next-state owned Unit
   reconciliation；
-- population=19 写 `operator_attention`，不自动跨 upkeep tier。
+- population 20写`operator_attention`并禁止任何后续生产；资源触及基础reserve时
+  仅绑定且无cargo的home Ranger可在upkeep前触发`COMBAT_UPKEEP_FUSE`。
 
 完成定义：
 
-- population 17 可按两 Tick完成 V/R，绝不到 20；
-- population 18 只生产缺口单位；population 19 永不生产；
-- Core-full、Core heal、shield repair、carrier backlog 优先于战斗生产；
-- failed spawn 不产生 retry storm；
-- 生产 journal 能区分 requested/accepted/resolved/confirmed/failed。
+- population 17可按两Tick完成V/R并停在19；
+- population 18只生产缺口单位；population 19只允许上述唯一Ranger事务；
+- population 20不再请求生产，population 21视为硬异常；
+- Core-full、Core heal、shield repair、carrier backlog优先于战斗生产；
+- failed spawn不产生retry storm；
+- 生产journal能区分requested/accepted/resolved/confirmed/failed。
 
 ### 11.7 C5：防区 slot 和战斗 planner
 
@@ -805,7 +856,8 @@ C0-C7 是代码和本地验证任务；C8-C11 是分阶段线上任务；C12 只
   result、confirmed Unit；
 - episode 记录 precision/cell-intercept/shots/sweeps/damage/deaths/cargo 和
   episode 内 harvest/deposit；
-- 复用 `metric_window_eligible`，污染/stale 时关闭或排除 episode；
+- 复用 `economy_metric_eligible`、`combat_metric_eligible` 和 episode attribution；
+  经济污染不自动污染Combat，Combat污染/stale/safety loss关闭或排除Combat episode；
 - console/journal 不写 full objects、token、owner identity、enemy history。
 
 完成定义：
@@ -904,18 +956,21 @@ submitted action
 
 ### 11.14 C12：Clean strategy evaluation
 
-前置：C11 至少一个事件级 episode；当前 session baseline 不污染；
-`metric_window_eligible=true`。
+前置：C11至少一个事件级Combat episode；`combat_metric_eligible=true`用于Tick
+门，且不存在Combat污染的基线/窗口。经济ROI可以仍为ineligible，不阻断Combat
+strategy evaluation。
 
 门槛：
 
 - 至少 3 个 clean complete combat episodes；
 - 无 confirmed friendly death，或有可解释且可接受的损失对照；
 - cargo loss=0，或有明确经济补偿证据；
-- episode 内 harvest→deposit 无明显归因下降；
+- episode内真实harvest/deposit作为伴随事实；只有
+  `economy_metric_eligible=true`时才用于经济非干扰/ROI判断，经济ineligible
+  不得通过或否决Combat质量；
 - cooldown 真实触发并解除；
 - population/upkeep/Core-full 无风险；
-- 至少 50 个 clean resolved Tick 后才允许评审参数调整。
+- 至少50个`combat_metric_eligible=true`的resolved Tick后才允许评审参数调整。
 
 C12 之前禁止调整 combat radius、production reserve、frontier、Worker cap、
 attack score 或追击策略。
@@ -952,7 +1007,7 @@ D1-D6 每个批次都必须本地绿色；D7 之后才允许线上。D8-D10 必�
 | C9 / D8 | production FSM full matrix | SPAWN→event→owned Unit confirmation | 仅 Core SPAWN |
 | C10 / D9 | slot/reservation/noninterference matrix | 30 resolved Tick movement/economy evidence | 仅 defender MOVE |
 | C11 / D10 | attack payload/event attribution matrix | SWEEP、precision、cell-intercept 各自事件链 | 仅明确授权的攻击动作 |
-| C12 | clean-window aggregation/replay | 3 clean episodes + 50 clean resolved Tick | 不做参数调整，先评估 |
+| C12 | Combat/economy domain aggregation/replay | 3 Combat-clean episodes + 50 Combat-eligible resolved Tick；经济ROI单列 | 不做参数调整，先评估 |
 
 任何一行的“必须提供”缺失，都只能标记为未完成，不能用更高层的证据替代。
 
@@ -965,7 +1020,8 @@ Combat V2 只有同时满足以下条件才能标记为完成：
 - C9 production-confirmed；
 - C10 positioning-verified；
 - C11 combat-event-verified，至少有真实 SWEEP/precision/cell-fire 事件链；
-- C12 strategy-quality-verified，满足 clean episode 和 50 Tick 门槛；
+- C12 strategy-quality-verified，满足3个Combat-clean episode、三类攻击覆盖和
+  50个Combat-eligible Tick；经济ROI结论独立；
 - Obsidian 项目记录写明 commit、session、cutoff、实际事件、污染状态、
   rollback 和未验收项；
 - 进程、协议、游戏结果、策略质量四类结论分开；
@@ -973,7 +1029,11 @@ Combat V2 只有同时满足以下条件才能标记为完成：
 
 ## 15. Implementation approval boundary
 
-### 15.1 2026-08-05 implementation status
+### 15.1 Archived historical implementation status (superseded)
+
+The entries below are retained as rollout provenance only. They are not the
+current repository, deployment, or acceptance status; use Section 2.1 and the
+latest Obsidian record as the current authority.
 
 - C0-C7 / D1-D6 已完成本地实现与回归：当前视野模型、v0.13 precision/cell payload、
   CombatMemory、accepted→resolved→confirmed spawn transaction、Core-relative guard/firing
@@ -987,8 +1047,8 @@ Combat V2 只有同时满足以下条件才能标记为完成：
   每 Tick `state → HTTP 202 → received`，plan action 与 received action 全部相等；
   mode 全为 `shadow`，combat submission=0，最大重复边失败=0，dynamic edge/cell=0，
   最大 reservation=17；
-- C8 线上样本的 baseline 为 population=19、17 Worker，所有 Tick
-  `metric_window_eligible=false`；因此不能推出经济、收益或战斗 ROI；当前 state 没有己方
+- C8 线上历史样本的 baseline 为 population=19、17 Worker，所有 Tick
+  `economy_metric_eligible=false`；因此不能推出经济ROI；该历史样本没有己方
   Vanguard/Ranger，combat proposal coverage=0，属于未观测，不是战斗成功；
 - C9 `production-verified`：session `a2d4d29bf27f` 于 Tick `54712` 仅提交一次
   Vanguard SPAWN，完成 `202 → received → CORE_SPAWN_SUCCEEDED → population=19 →
