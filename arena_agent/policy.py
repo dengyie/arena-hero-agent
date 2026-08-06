@@ -106,14 +106,11 @@ class CombatMemory:
                 and defenders_home):
             candidates = sorted(
                 (worker for worker in state.workers
-                 if worker.cargo == 0 and (worker.hp is None or worker.hp >= 2)
+                 if worker.id in threatened_worker_ids and worker.cargo == 0
+                 and (worker.hp is None or worker.hp >= 2)
                  and state.core_position is not None
                  and manhattan(worker.position, state.core_position) > CORE_GUARD_RADIUS),
-                key=lambda worker: (
-                    worker.id not in threatened_worker_ids,
-                    -(manhattan(worker.position, state.core_position)
-                      if state.core_position is not None else 0), worker.id,
-                ),
+                key=lambda worker: worker.id,
             )
             if candidates:
                 self.escort_worker_id = candidates[0].id

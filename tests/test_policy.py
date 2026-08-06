@@ -550,10 +550,18 @@ class AgentTests(unittest.TestCase):
         first = snapshot_from_state(1, {"status": "ACTIVE", "resources": 30,
             "population": 3, "objects": [core, guard, ranger, worker], "events": []})
         plan = economy_plan(first, memory, combat_mode="live-precision")
-        self.assertEqual(memory.combat.escort_worker_id, "worker")
-        self.assertEqual(plan.combat_decisions["guard"]["state"], "ESCORT")
+        self.assertIsNone(memory.combat.escort_worker_id)
+        self.assertNotEqual(plan.combat_decisions["guard"]["state"], "ESCORT")
 
-        expired = snapshot_from_state(121, {"status": "ACTIVE", "resources": 30,
+        threatened = snapshot_from_state(2, {"status": "ACTIVE", "resources": 30,
+            "population": 3, "objects": [core, guard, ranger, worker,
+                {"kind": "UNIT", "id": "enemy", "controlled": False,
+                 "position": [12, 0], "unit_type": "WORKER", "hp": 2}], "events": []})
+        threatened_plan = economy_plan(threatened, memory, combat_mode="live-precision")
+        self.assertEqual(memory.combat.escort_worker_id, "worker")
+        self.assertIn(threatened_plan.combat_decisions["guard"]["state"], {"RESPOND", "ESCORT"})
+
+        expired = snapshot_from_state(123, {"status": "ACTIVE", "resources": 30,
             "population": 3, "objects": [core, guard, ranger, worker], "events": []})
         expired_plan = economy_plan(expired, memory, combat_mode="live-precision")
         self.assertIsNone(memory.combat.escort_worker_id)
@@ -573,10 +581,9 @@ class AgentTests(unittest.TestCase):
             "population": 4, "objects": [core, guard, ranger, near, far], "events": []})
         memory = ExplorationMemory()
         plan = economy_plan(state, memory, combat_mode="live-precision")
-        self.assertEqual(memory.combat.escort_worker_id, "far")
-        guard_cell = tuple(plan.combat_decisions["guard"]["candidate_cell"])
-        ranger_cell = tuple(plan.combat_decisions["ranger"]["candidate_cell"])
-        self.assertNotEqual(guard_cell, ranger_cell)
+        self.assertIsNone(memory.combat.escort_worker_id)
+        self.assertNotEqual(plan.combat_decisions["guard"]["state"], "ESCORT")
+        self.assertNotEqual(plan.combat_decisions["ranger"]["state"], "ESCORT")
 
     def test_v2_patrol_does_not_rebind_until_defenders_return_home(self):
         memory = CombatMemory(home_vanguard_id="guard", home_ranger_id="ranger",
@@ -593,11 +600,13 @@ class AgentTests(unittest.TestCase):
         memory.reconcile_escort(away, set())
         self.assertIsNone(memory.escort_worker_id)
 
+        enemy = {"kind": "UNIT", "id": "enemy", "controlled": False,
+                 "position": [16, 0], "unit_type": "WORKER", "hp": 2}
         home = snapshot_from_state(11, {"status": "ACTIVE", "resources": 30,
             "population": 3, "objects": [core, {**far_guard, "position": [2, 0]},
-                                           {**far_ranger, "position": [0, 2]}, worker],
+                                           {**far_ranger, "position": [0, 2]}, worker, enemy],
             "events": []})
-        memory.reconcile_escort(home, set())
+        memory.reconcile_escort(home, {"worker"})
         self.assertEqual(memory.escort_worker_id, "worker")
 
     def test_v2_episode_attributes_only_accepted_shot_mode_once(self):

@@ -26,9 +26,10 @@ Current implemented combat boundary:
 - Vanguard/Ranger production and role assignment are implemented and deployed;
 - defender positioning is Core-local and uses shared Worker reservations;
 - visible threats can trigger Worker safe-retreat and a bounded friendly patrol:
-  defenders may follow a current-state, owned, healthy, empty Worker anchor for
-  at most `ESCORT_LEASE_TICKS=120`; they never store enemy facts, escort carriers,
-  pursue through fog, or continue after the lease/return conditions;
+  only when a current-state enemy threatens it, defenders may follow a current-state,
+  owned, healthy, empty Worker anchor for at most `ESCORT_LEASE_TICKS=120`; without
+  that current threat they remain Core-local. They never store enemy facts, escort
+  carriers, pursue through fog, or continue after the lease/return conditions;
 - target-free v0.13 cell-fire payloads are implemented but no live cell-fire
   event has yet been observed;
 - no clean live combat episode has been observed in the latest sessions.
@@ -540,8 +541,8 @@ production-critical behaviors that must remain explicitly covered.
 
 10. adjacent multi-hostile cell selects deterministic Vanguard SWEEP;
 11. only Core-local current threats produce bounded defender response movement;
-12. Worker threat triggers Worker retreat/safety fuse; empty healthy Worker patrol
-    anchor is bounded by lease, distance, and return-to-Core conditions;
+12. Only a current enemy threat may create an empty healthy Worker patrol anchor;
+    the anchor is bounded by lease, distance, and return-to-Core conditions;
 13. visibility loss returns defenders to guard ring with no enemy history;
 14. injured defender returns and HEALs; fatal candidate never heals;
 15. current legal Ranger target produces precision payload;
