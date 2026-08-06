@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from .rules import core_resource_capacity
+
 Position = tuple[int, int]
 
 
@@ -108,7 +110,7 @@ def snapshot_from_state(tick: int, data: dict[str, Any]) -> Snapshot:
     return Snapshot(
         tick=int(tick), status=str(data.get("status", "UNKNOWN")),
         resources=int(data.get("resources", 0)), population=population,
-        resource_capacity=max(10, population * 5),
+        resource_capacity=core_resource_capacity(population),
         core_id=core_id, core_position=core_position,
         core_hp=core_hp, core_shield=core_shield, core_state=core_state,
         upkeep_next_tick=int(data["upkeep_next_tick"]) if data.get("upkeep_next_tick") is not None else None,

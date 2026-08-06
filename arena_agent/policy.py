@@ -8,6 +8,13 @@ from .allocator import allocate_visible_resources
 from .combat import (guard_slots, ranger_actions, ranger_firing_cells, select_ranger_decision,
                      select_vanguard_decision)
 from .model import Position, Snapshot, Unit
+from .rules import (
+    CORE_RESOURCE_CAPACITY_PER_UNIT,
+    CORE_RESOURCE_MINIMUM_CAPACITY,
+    UNIT_BASE_COSTS,
+    core_resource_capacity,
+    unit_production_cost,
+)
 from .path import (DIRECTIONS, FRONTIER_PATH_NODE_CAP, MAX_FRONTIER_PATH_EVALUATIONS,
                    PathResult, first_step, plan_frontier_path, plan_path, step_position)
 
@@ -54,30 +61,6 @@ COMBAT_SPAWN_TIMEOUT = 4
 ESCORT_LEASE_TICKS = 120
 COMBAT_PRODUCTION_MODES = {"production", "positioning", "live-sweep", "live-precision", "live-cell", "live"}
 COMBAT_MOVEMENT_MODES = {"positioning", "live-sweep", "live-precision", "live-cell", "live"}
-UNIT_BASE_COSTS = {"WORKER": 5, "VANGUARD": 10, "RANGER": 12}
-CORE_RESOURCE_MINIMUM_CAPACITY = 10
-CORE_RESOURCE_CAPACITY_PER_UNIT = 5
-
-
-def core_resource_capacity(population: int) -> int:
-    if population < 0:
-        raise ValueError("population must not be negative")
-    return max(CORE_RESOURCE_MINIMUM_CAPACITY, population * CORE_RESOURCE_CAPACITY_PER_UNIT)
-
-
-def unit_production_cost(unit_type: str, population: int) -> int:
-    if population < 0:
-        raise ValueError("population must not be negative")
-    try:
-        base = UNIT_BASE_COSTS[unit_type]
-    except KeyError as exc:
-        raise ValueError(f"unknown unit type: {unit_type}") from exc
-    exponent = 0 if population < 20 else (population - 20) // 5 + 1
-    numerator = base * 13**exponent
-    denominator = 10**exponent
-    return (2 * numerator + denominator) // (2 * denominator)
-
-
 def upkeep_for_population(population: int) -> int:
     tier = max(0, population) // 20
     return tier * (tier + 1) // 2
