@@ -81,7 +81,8 @@ def _shot_is_clear(start: Position, target: Position, obstacles: frozenset[Posit
 
 
 def select_vanguard_decision(vanguard: Unit, state: Snapshot,
-                              *, protected_cells: set[Position]) -> CombatDecision:
+                              *, protected_cells: set[Position],
+                              protected_radius: int | None = None) -> CombatDecision:
     direction_order = (("UP", (0, -1)), ("RIGHT", (1, 0)),
                        ("DOWN", (0, 1)), ("LEFT", (-1, 0)))
     candidates: list[tuple[int, int, int, str, Position]] = []
@@ -91,6 +92,8 @@ def select_vanguard_decision(vanguard: Unit, state: Snapshot,
         if not hostiles:
             continue
         protected = min((abs(cell[0] - p[0]) + abs(cell[1] - p[1]) for p in protected_cells), default=99)
+        if protected_radius is not None and protected > protected_radius:
+            continue
         candidates.append((-len(hostiles), protected, rank, direction, cell))
     if not candidates:
         return CombatDecision({"type": "WAIT"}, reason="NO_ADJACENT_HOSTILE")
@@ -100,9 +103,14 @@ def select_vanguard_decision(vanguard: Unit, state: Snapshot,
 
 
 def select_ranger_decision(ranger: Unit, state: Snapshot,
-                            *, protected_cells: set[Position], allow_cell_intercept: bool = False) -> CombatDecision:
+                            *, protected_cells: set[Position], allow_cell_intercept: bool = False,
+                            protected_radius: int | None = None) -> CombatDecision:
     legal = [enemy for enemy in state.visible_enemies
-             if _shot_is_clear(ranger.position, enemy.position, state.obstacle_cells)]
+             if _shot_is_clear(ranger.position, enemy.position, state.obstacle_cells)
+             and (protected_radius is None or min(
+                 (abs(enemy.position[0] - p[0]) + abs(enemy.position[1] - p[1])
+                 for p in protected_cells), default=99,
+             ) <= protected_radius)]
     if legal:
         target = min(legal, key=lambda enemy: (
             min((abs(enemy.position[0] - p[0]) + abs(enemy.position[1] - p[1])

@@ -25,8 +25,10 @@ Current implemented combat boundary:
   only while the Ranger is already within the Core guard radius;
 - Vanguard/Ranger production and role assignment are implemented and deployed;
 - defender positioning is Core-local and uses shared Worker reservations;
-- visible threats can trigger Worker safe-retreat and Core-local guard decisions,
-  but defenders do not escort remote Workers or pursue across the map;
+- visible threats can trigger Worker safe-retreat and a bounded friendly patrol:
+  defenders may follow a current-state, owned, healthy, empty Worker anchor for
+  at most `ESCORT_LEASE_TICKS=120`; they never store enemy facts, escort carriers,
+  pursue through fog, or continue after the lease/return conditions;
 - target-free v0.13 cell-fire payloads are implemented but no live cell-fire
   event has yet been observed;
 - no clean live combat episode has been observed in the latest sessions.
@@ -338,7 +340,8 @@ Current-state-only priorities:
 2. enemy within `ENGAGE_RADIUS` of Core;
 3. currently visible enemy Core inside the Core-local defensive zone;
 4. an enemy within 3 of a carrying/injured Worker triggers Worker `RETURN_SAFE`
-   and Ranger safety fuses, but not remote defender escort;
+   and Ranger safety fuses; an empty healthy Worker may become a bounded patrol
+   anchor, but a carrier or injured Worker is never an escort anchor;
 5. no Core-local defensive threat.
 
 Enemy Unit ownership remains unknown. Target scoring uses only current object
@@ -537,7 +540,8 @@ production-critical behaviors that must remain explicitly covered.
 
 10. adjacent multi-hostile cell selects deterministic Vanguard SWEEP;
 11. only Core-local current threats produce bounded defender response movement;
-12. remote Worker threat triggers Worker retreat/safety fuse, not defender escort;
+12. Worker threat triggers Worker retreat/safety fuse; empty healthy Worker patrol
+    anchor is bounded by lease, distance, and return-to-Core conditions;
 13. visibility loss returns defenders to guard ring with no enemy history;
 14. injured defender returns and HEALs; fatal candidate never heals;
 15. current legal Ranger target produces precision payload;
@@ -922,10 +926,14 @@ Core-full/deposit regression、非预期 Unit type、pending transaction 无界�
 - defender slot 不振荡；
 - dynamic failure 有 TTL、有替代动作或显式 hold；
 - combat Unit 不进入 Worker ingress staging。
+- friendly patrol anchor 只保存 owned Worker ID，租约最多120 Tick；carrier、
+  injured、Core arrival、defender离开Core guard或租约到期均释放，并要求守卫
+  回到Core guard后才能绑定下一anchor。
 
 ### 11.13 C11：Live attacks
 
-前置：C10 通过；存在自然当前可见合法目标；明确授权改变战斗 action。
+前置：C10通过；存在自然当前可见合法目标（Core-local或当前patrol anchor
+防区）；明确授权改变战斗 action。
 
 按顺序开放：
 

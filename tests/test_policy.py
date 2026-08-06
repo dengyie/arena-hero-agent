@@ -57,6 +57,14 @@ class AgentTests(unittest.TestCase):
         assert audit is not None
         self.assertEqual(audit["expected_spend"], 0)
 
+    def test_resource_audit_accounts_for_unit_heal_cost(self):
+        state = snapshot_from_state(9, {"status": "ACTIVE", "resources": 9,
+            "population": 1, "objects": [], "events": [{
+                "event_id": "unit-heal", "event_type": "UNIT_HEAL_SUCCEEDED",
+                "actor_id": "worker", "values": {"amount": 1, "cost": 1, "hp": 2},
+            }]})
+        self.assertIsNone(resource_transition_audit(10, state, None))
+
     def test_conflicting_same_source_receipts_are_not_authoritative(self):
         self.assertTrue(received_source_conflict([
             {"source": "AGENT", "plan": {"unit_actions": {"w": {"type": "WAIT"}}}},
@@ -496,6 +504,101 @@ class AgentTests(unittest.TestCase):
         fallback = economy_plan(second, mem, combat_mode="live")
         self.assertNotEqual(fallback.combat_decisions["guard"]["state"], "RESPOND")
         self.assertFalse(any("enemy" in name for name in vars(mem.combat)))
+
+    def test_v2_current_worker_threat_starts_bounded_friendly_escort(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        guard = {"kind": "UNIT", "id": "guard", "controlled": True,
+                 "position": [2, 0], "unit_type": "VANGUARD", "cargo": 0, "hp": 4}
+        ranger = {"kind": "UNIT", "id": "ranger", "controlled": True,
+                  "position": [0, 2], "unit_type": "RANGER", "cargo": 0, "hp": 2}
+        worker = {"kind": "UNIT", "id": "worker", "controlled": True,
+                  "position": [12, 0], "unit_type": "WORKER", "cargo": 0, "hp": 2}
+        enemy = {"kind": "UNIT", "id": "enemy", "controlled": False,
+                 "position": [14, 0], "unit_type": "WORKER", "hp": 2}
+        memory = ExplorationMemory()
+        threatened = snapshot_from_state(1, {"status": "ACTIVE", "resources": 30,
+            "population": 3, "objects": [core, guard, ranger, worker, enemy], "events": []})
+        first = economy_plan(threatened, memory, combat_mode="live-precision")
+        self.assertEqual(memory.combat.escort_worker_id, "worker")
+        self.assertEqual(first.combat_decisions["guard"]["state"], "RESPOND")
+        self.assertEqual(first.combat_decisions["ranger"]["state"], "RESPOND")
+        self.assertEqual(first.unit_actions["guard"]["type"], "MOVE")
+        self.assertEqual(first.unit_actions["ranger"]["type"], "MOVE")
+        self.assertFalse(any("enemy" in name for name in vars(memory.combat)))
+
+        quiet = snapshot_from_state(2, {"status": "ACTIVE", "resources": 30,
+            "population": 3, "objects": [core, guard, ranger, worker], "events": []})
+        second = economy_plan(quiet, memory, combat_mode="live-precision")
+        self.assertEqual(memory.combat.escort_worker_id, "worker")
+        self.assertEqual(second.combat_decisions["guard"]["state"], "ESCORT")
+
+        carrying = snapshot_from_state(3, {"status": "ACTIVE", "resources": 30,
+            "population": 3, "objects": [core, guard, ranger, {**worker, "cargo": 1}],
+            "events": []})
+        economy_plan(carrying, memory, combat_mode="live-precision")
+        self.assertIsNone(memory.combat.escort_worker_id)
+
+    def test_v2_friendly_patrol_starts_without_enemy_and_lease_expires(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        guard = {"kind": "UNIT", "id": "guard", "controlled": True,
+                 "position": [2, 0], "unit_type": "VANGUARD", "cargo": 0, "hp": 4}
+        ranger = {"kind": "UNIT", "id": "ranger", "controlled": True,
+                  "position": [0, 2], "unit_type": "RANGER", "cargo": 0, "hp": 2}
+        worker = {"kind": "UNIT", "id": "worker", "controlled": True,
+                  "position": [10, 0], "unit_type": "WORKER", "cargo": 0, "hp": 2}
+        memory = ExplorationMemory()
+        first = snapshot_from_state(1, {"status": "ACTIVE", "resources": 30,
+            "population": 3, "objects": [core, guard, ranger, worker], "events": []})
+        plan = economy_plan(first, memory, combat_mode="live-precision")
+        self.assertEqual(memory.combat.escort_worker_id, "worker")
+        self.assertEqual(plan.combat_decisions["guard"]["state"], "ESCORT")
+
+        expired = snapshot_from_state(121, {"status": "ACTIVE", "resources": 30,
+            "population": 3, "objects": [core, guard, ranger, worker], "events": []})
+        expired_plan = economy_plan(expired, memory, combat_mode="live-precision")
+        self.assertIsNone(memory.combat.escort_worker_id)
+        self.assertNotEqual(expired_plan.combat_decisions["guard"]["state"], "ESCORT")
+
+    def test_v2_patrol_selects_farthest_safe_worker_and_stable_distinct_slots(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        guard = {"kind": "UNIT", "id": "guard", "controlled": True,
+                 "position": [2, 0], "unit_type": "VANGUARD", "cargo": 0, "hp": 4}
+        ranger = {"kind": "UNIT", "id": "ranger", "controlled": True,
+                  "position": [0, 2], "unit_type": "RANGER", "cargo": 0, "hp": 2}
+        near = {"kind": "UNIT", "id": "near", "controlled": True,
+                "position": [4, 0], "unit_type": "WORKER", "cargo": 0, "hp": 2}
+        far = {"kind": "UNIT", "id": "far", "controlled": True,
+               "position": [18, 0], "unit_type": "WORKER", "cargo": 0, "hp": 2}
+        state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 30,
+            "population": 4, "objects": [core, guard, ranger, near, far], "events": []})
+        memory = ExplorationMemory()
+        plan = economy_plan(state, memory, combat_mode="live-precision")
+        self.assertEqual(memory.combat.escort_worker_id, "far")
+        guard_cell = tuple(plan.combat_decisions["guard"]["candidate_cell"])
+        ranger_cell = tuple(plan.combat_decisions["ranger"]["candidate_cell"])
+        self.assertNotEqual(guard_cell, ranger_cell)
+
+    def test_v2_patrol_does_not_rebind_until_defenders_return_home(self):
+        memory = CombatMemory(home_vanguard_id="guard", home_ranger_id="ranger",
+                              escort_cooldown_until=10)
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        far_guard = {"kind": "UNIT", "id": "guard", "controlled": True,
+                     "position": [8, 0], "unit_type": "VANGUARD", "cargo": 0, "hp": 4}
+        far_ranger = {"kind": "UNIT", "id": "ranger", "controlled": True,
+                      "position": [8, 1], "unit_type": "RANGER", "cargo": 0, "hp": 2}
+        worker = {"kind": "UNIT", "id": "worker", "controlled": True,
+                  "position": [15, 0], "unit_type": "WORKER", "cargo": 0, "hp": 2}
+        away = snapshot_from_state(10, {"status": "ACTIVE", "resources": 30,
+            "population": 3, "objects": [core, far_guard, far_ranger, worker], "events": []})
+        memory.reconcile_escort(away, set())
+        self.assertIsNone(memory.escort_worker_id)
+
+        home = snapshot_from_state(11, {"status": "ACTIVE", "resources": 30,
+            "population": 3, "objects": [core, {**far_guard, "position": [2, 0]},
+                                           {**far_ranger, "position": [0, 2]}, worker],
+            "events": []})
+        memory.reconcile_escort(home, set())
+        self.assertEqual(memory.escort_worker_id, "worker")
 
     def test_v2_episode_attributes_only_accepted_shot_mode_once(self):
         mem = ExplorationMemory()

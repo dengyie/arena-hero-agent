@@ -242,7 +242,10 @@ def resource_transition_audit(previous_resources: int | None, snapshot: Any,
         if kind == "UPKEEP_PAID":
             expected += int(values.get("paid", 0) or 0)
             evidence.append({"event": kind, "paid": int(values.get("paid", 0) or 0)})
-        elif kind in {"CORE_SPAWN_SUCCEEDED", "CORE_HEAL_SUCCEEDED", "CORE_REPAIR_SUCCEEDED"}:
+        elif kind in {
+            "CORE_SPAWN_SUCCEEDED", "CORE_HEAL_SUCCEEDED", "CORE_REPAIR_SUCCEEDED",
+            "UNIT_HEAL_SUCCEEDED",
+        }:
             cost = int(values.get("cost", 0) or 0)
             expected += cost
             evidence.append({"event": kind, "cost": cost})

@@ -70,6 +70,36 @@ class CombatEvaluationTests(unittest.TestCase):
         result = evaluate_combat_session(self.write_rows(rows), "domains")
         self.assertEqual(result["eligible_resolved_ticks"], 1)
 
+    def test_passive_damage_episode_does_not_count_as_clean_attack_episode(self):
+        passive = {"start_tick": 1, "end_tick": 1, "incoming_damage": 1,
+                   "precision_shots": 0, "cell_intercept_shots": 0, "sweeps": 0,
+                   "friendly_deaths": 0, "friendly_cargo_lost": 0,
+                   "outcome": "CLEAN_COMPLETE"}
+        rows = [
+            {"event": "plan", "session": "passive", "tick": 1,
+             "result": {"status": 202}, "state": {
+                 "combat_metric_eligible": True, "events": [],
+                 "phase_evaluation": {"clean_combat_episodes": [passive]}}},
+            {"event": "received", "session": "passive", "data": {"tick": 1}},
+        ]
+        result = evaluate_combat_session(self.write_rows(rows), "passive")
+        self.assertEqual(result["clean_complete_episodes"], 0)
+
+    def test_authoritative_attack_episode_counts_as_clean(self):
+        attack = {"start_tick": 1, "end_tick": 1, "incoming_damage": 0,
+                  "precision_shots": 1, "cell_intercept_shots": 0, "sweeps": 0,
+                  "friendly_deaths": 0, "friendly_cargo_lost": 0,
+                  "outcome": "CLEAN_COMPLETE"}
+        rows = [
+            {"event": "plan", "session": "attack", "tick": 1,
+             "result": {"status": 202}, "state": {
+                 "combat_metric_eligible": True, "events": [],
+                 "phase_evaluation": {"clean_combat_episodes": [attack]}}},
+            {"event": "received", "session": "attack", "data": {"tick": 1}},
+        ]
+        result = evaluate_combat_session(self.write_rows(rows), "attack")
+        self.assertEqual(result["clean_complete_episodes"], 1)
+
     def write_rows(self, rows):
         temp = tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False)
         with temp:

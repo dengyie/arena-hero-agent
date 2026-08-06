@@ -51,6 +51,7 @@ CORE_GUARD_RADIUS = 3
 COMBAT_RESERVE = 20
 COMBAT_SPAWN_COOLDOWN = 4
 COMBAT_SPAWN_TIMEOUT = 4
+ESCORT_LEASE_TICKS = 120
 COMBAT_PRODUCTION_MODES = {"production", "positioning", "live-sweep", "live-precision", "live-cell", "live"}
 COMBAT_MOVEMENT_MODES = {"positioning", "live-sweep", "live-precision", "live-cell", "live"}
 
@@ -76,6 +77,47 @@ class CombatMemory:
     spawn_cooldown_until: int = 0
     last_spawn_result: str | None = None
     last_role_transition: str | None = None
+    escort_worker_id: str | None = None
+    escort_until_tick: int = 0
+    escort_cooldown_until: int = 0
+
+    def reconcile_escort(self, state: Snapshot, threatened_worker_ids: set[str]) -> None:
+        workers = {worker.id: worker for worker in state.workers}
+        current = workers.get(self.escort_worker_id or "")
+        if (current is None or current.cargo > 0 or (current.hp is not None and current.hp < 2)
+                or state.tick >= self.escort_until_tick
+                or (state.core_position is not None
+                    and manhattan(current.position, state.core_position) <= CORE_GUARD_RADIUS)):
+            if self.escort_worker_id is not None:
+                self.escort_cooldown_until = max(
+                    self.escort_cooldown_until, state.tick + ESCORT_LEASE_TICKS,
+                )
+            self.escort_worker_id = None
+        defenders = [
+            unit for unit in state.units
+            if unit.id in {self.home_vanguard_id, self.home_ranger_id}
+        ]
+        defenders_home = (
+            state.core_position is not None
+            and all(manhattan(unit.position, state.core_position) <= CORE_GUARD_RADIUS
+                    for unit in defenders)
+        )
+        if (self.escort_worker_id is None and state.tick >= self.escort_cooldown_until
+                and defenders_home):
+            candidates = sorted(
+                (worker for worker in state.workers
+                 if worker.cargo == 0 and (worker.hp is None or worker.hp >= 2)
+                 and state.core_position is not None
+                 and manhattan(worker.position, state.core_position) > CORE_GUARD_RADIUS),
+                key=lambda worker: (
+                    worker.id not in threatened_worker_ids,
+                    -(manhattan(worker.position, state.core_position)
+                      if state.core_position is not None else 0), worker.id,
+                ),
+            )
+            if candidates:
+                self.escort_worker_id = candidates[0].id
+                self.escort_until_tick = state.tick + ESCORT_LEASE_TICKS
 
     def request_spawn(self, unit_type: str, tick: int, units: tuple[Unit, ...]) -> None:
         self.pending_spawn = PendingCombatSpawn(
@@ -996,14 +1038,25 @@ def _combat_proposals(state: Snapshot, memory: ExplorationMemory,
                       combat_mode: str) -> dict[str, dict[str, Any]]:
     protected = {state.core_position} if state.core_position is not None else set()
     protected.update(worker.position for worker in state.workers if worker.cargo > 0 or (worker.hp or 2) <= 1)
+    escort = next((worker for worker in state.workers
+                   if worker.id == memory.combat.escort_worker_id), None)
+    if escort is not None:
+        protected.add(escort.position)
     proposals: dict[str, dict[str, Any]] = {}
     for unit in (*state.vanguards, *state.rangers):
         if unit.id not in {memory.combat.home_vanguard_id, memory.combat.home_ranger_id}:
             continue
-        decision = (select_vanguard_decision(unit, state, protected_cells=protected)
-                    if unit.unit_type == "VANGUARD" else
-                    select_ranger_decision(unit, state, protected_cells=protected,
-                                           allow_cell_intercept=combat_mode in {"shadow", "live-cell", "live"}))
+        proposal_radius = None if combat_mode == "shadow" else THREAT_RADIUS
+        if unit.unit_type == "VANGUARD":
+            decision = select_vanguard_decision(
+                unit, state, protected_cells=protected, protected_radius=proposal_radius,
+            )
+        else:
+            decision = select_ranger_decision(
+                unit, state, protected_cells=protected,
+                allow_cell_intercept=combat_mode in {"shadow", "live-cell", "live"},
+                protected_radius=proposal_radius,
+            )
         action_type = decision.action.get("type")
         attack_enabled = (
             action_type == "SWEEP" and combat_mode in {"shadow", "live-sweep", "live-precision", "live-cell", "live"}
@@ -1048,6 +1101,12 @@ def _apply_defender_movement(state: Snapshot, memory: ExplorationMemory,
         enemy for enemy in state.visible_enemies
         if core is not None and manhattan(enemy.position, core) <= CORE_GUARD_RADIUS + 1
     ]
+    escort = next((worker for worker in state.workers
+                   if worker.id == memory.combat.escort_worker_id), None)
+    escort_threats = [
+        enemy for enemy in state.visible_enemies
+        if escort is not None and manhattan(enemy.position, escort.position) <= THREAT_RADIUS
+    ]
     threat_core = core if core is not None else (0, 0)
     for unit in sorted(defenders, key=lambda item: item.id):
         proposal = proposals.setdefault(unit.id, {
@@ -1068,9 +1127,13 @@ def _apply_defender_movement(state: Snapshot, memory: ExplorationMemory,
         elif proposal["proposed_action"].get("type") in {"SWEEP", "SHOOT"}:
             actions[unit.id] = proposal["proposed_action"]
             continue
-        elif current_threats:
-            threat = min(current_threats, key=lambda enemy: (
-                manhattan(enemy.position, threat_core), enemy.id
+        elif current_threats or escort_threats:
+            active_threats = current_threats or escort_threats
+            active_anchor = threat_core if current_threats else (
+                escort.position if escort is not None else threat_core
+            )
+            threat = min(active_threats, key=lambda enemy: (
+                manhattan(enemy.position, active_anchor), enemy.id
             ))
             candidates = (list(ranger_firing_cells(threat.position, obstacles))
                           if unit.unit_type == "RANGER" else [
@@ -1079,12 +1142,39 @@ def _apply_defender_movement(state: Snapshot, memory: ExplorationMemory,
                           ])
             target = min(candidates, key=lambda cell: (manhattan(unit.position, cell), cell), default=None)
             proposal["state"] = "RESPOND"
-            proposal["movement_reason"] = "CURRENT_CORE_ZONE_THREAT"
+            proposal["movement_reason"] = (
+                "CURRENT_CORE_ZONE_THREAT" if current_threats else "CURRENT_ESCORT_THREAT"
+            )
             proposal["candidate_cell"] = list(target) if target is not None else None
             if target is None:
                 actions[unit.id] = {"type": "WAIT"}
                 proposal["state"] = "BLOCKED"
                 proposal["movement_reason"] = "NO_RESPONSE_CELL"
+                continue
+        elif escort is not None:
+            preferred = (
+                ("LEFT", "UP", "RIGHT", "DOWN")
+                if unit.unit_type == "VANGUARD" else
+                ("RIGHT", "DOWN", "LEFT", "UP")
+            )
+            candidates = [
+                step_position(escort.position, direction) for direction in preferred
+                if step_position(escort.position, direction) not in obstacles
+                and step_position(escort.position, direction) not in assigned_slots
+            ]
+            target = min(candidates, key=lambda cell: (
+                preferred.index(next(
+                    direction for direction in preferred
+                    if step_position(escort.position, direction) == cell
+                )), manhattan(unit.position, cell), cell,
+            ), default=None)
+            if target is not None:
+                assigned_slots.add(target)
+            proposal["state"] = "ESCORT"
+            proposal["movement_reason"] = "FRIENDLY_ESCORT_ANCHOR"
+            proposal["candidate_cell"] = list(target) if target is not None else None
+            if target is None or unit.position == target:
+                actions[unit.id] = {"type": "WAIT"}
                 continue
         else:
             target = next((slot for slot in slots if slot not in assigned_slots), None)
@@ -1144,6 +1234,7 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None, *,
             return _plan(actions, memory, policy_state="COMBAT_UPKEEP_FUSE")
 
     threatened_worker_ids = threatened_workers(state)
+    memory.combat.reconcile_escort(state, threatened_worker_ids)
     memory.safe_retreat_workers.update(
         worker_id for worker_id in threatened_worker_ids
         if any(worker.id == worker_id and worker.cargo <= 0 and (worker.hp is None or worker.hp > 1)

@@ -61,7 +61,13 @@ def evaluate_combat_session(journal_path: Path | str, session: str) -> dict[str,
             episodes_by_key[key] = episode
 
     episodes = list(episodes_by_key.values())
-    clean = [episode for episode in episodes if episode.get("outcome") == "CLEAN_COMPLETE"]
+    clean = [
+        episode for episode in episodes
+        if episode.get("outcome") == "CLEAN_COMPLETE"
+        and sum(int(episode.get(key, 0) or 0) for key in (
+            "sweeps", "precision_shots", "cell_intercept_shots",
+        )) > 0
+    ]
     friendly_deaths = sum(int(episode.get("friendly_deaths", 0) or 0) for episode in clean)
     cargo_lost = sum(int(episode.get("friendly_cargo_lost", 0) or 0) for episode in clean)
     sweep_episodes = sum(int(episode.get("sweeps", 0) or 0) for episode in clean)
