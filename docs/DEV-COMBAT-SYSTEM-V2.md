@@ -90,6 +90,19 @@ Historical design-time baseline (superseded; retained for provenance):
 - Current private state is a complete replacement. Enemy Units outside vision
   are unknown; remembered positions are not current targeting facts.
 
+### 2.2.1 Official dynamic production pricing (SDK 0.2.9)
+
+The current official rule is population-based dynamic pricing, not a fixed combat
+unit cost. Living Unit population `N` excludes Core. Base prices are Worker `5`,
+Vanguard `10`, Ranger `12`; `N=0..19` uses base price. For `N>=20`, use exact
+rational arithmetic with `exponent=(N-20)//5+1`, price `base*13**exponent/10**exponent`,
+rounded once half-up. The published bands are Worker `5/7/8/11`, Vanguard
+`10/13/17/22`, Ranger `12/16/20/26` for `N=0..19/20..24/25..29/30..34`.
+Core resource capacity remains `max(10, N*5)`. The implementation's
+`unit_production_cost()` matches the official `arena-hero==0.2.9` `unit_cost()`;
+pxed production remains the direct protocol client because its Python is 3.10 and
+SDK 0.2.9 requires Python >=3.11.
+
 ### 2.3 Authoritative operations contract
 
 HTTP `202` is not final per-actor authority when multiple source plans exist for

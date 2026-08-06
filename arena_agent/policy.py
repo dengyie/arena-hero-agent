@@ -54,6 +54,28 @@ COMBAT_SPAWN_TIMEOUT = 4
 ESCORT_LEASE_TICKS = 120
 COMBAT_PRODUCTION_MODES = {"production", "positioning", "live-sweep", "live-precision", "live-cell", "live"}
 COMBAT_MOVEMENT_MODES = {"positioning", "live-sweep", "live-precision", "live-cell", "live"}
+UNIT_BASE_COSTS = {"WORKER": 5, "VANGUARD": 10, "RANGER": 12}
+CORE_RESOURCE_MINIMUM_CAPACITY = 10
+CORE_RESOURCE_CAPACITY_PER_UNIT = 5
+
+
+def core_resource_capacity(population: int) -> int:
+    if population < 0:
+        raise ValueError("population must not be negative")
+    return max(CORE_RESOURCE_MINIMUM_CAPACITY, population * CORE_RESOURCE_CAPACITY_PER_UNIT)
+
+
+def unit_production_cost(unit_type: str, population: int) -> int:
+    if population < 0:
+        raise ValueError("population must not be negative")
+    try:
+        base = UNIT_BASE_COSTS[unit_type]
+    except KeyError as exc:
+        raise ValueError(f"unknown unit type: {unit_type}") from exc
+    exponent = 0 if population < 20 else (population - 20) // 5 + 1
+    numerator = base * 13**exponent
+    denominator = 10**exponent
+    return (2 * numerator + denominator) // (2 * denominator)
 
 
 def upkeep_for_population(population: int) -> int:
@@ -176,7 +198,7 @@ class CombatMemory:
             return None
         if state.population == COMBAT_POPULATION_CEILING - 1 and missing != "RANGER":
             return None
-        cost = 10 if missing == "VANGUARD" else 12
+        cost = unit_production_cost(missing, state.population)
         projected_upkeep = upkeep_for_population(state.population + 1)
         if projected_upkeep and recent_deposits < projected_upkeep * COMBAT_UPKEEP_RESERVE_TICKS:
             return None

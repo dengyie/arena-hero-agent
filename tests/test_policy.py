@@ -22,11 +22,33 @@ from arena_agent.__main__ import (PermanentAuthError, PhaseEvaluationMetrics, Re
 from pathlib import Path
 from arena_agent.policy import (
     CombatMemory, ExplorationMemory, MAX_BAND_RADIUS, MAX_ECONOMY_WORKERS, MAX_EXTERNAL_RECOVERY_POPULATION, PATH_NODE_CAP,
-    economy_plan, first_step, plan_path, ranger_fire_allowed, upkeep_for_population,
+    core_resource_capacity, economy_plan, first_step, plan_path, ranger_fire_allowed,
+    unit_production_cost, upkeep_for_population,
 )
 from arena_agent.journal import Journal
 
 class AgentTests(unittest.TestCase):
+    def test_sdk_029_dynamic_unit_prices_and_core_capacity(self):
+        self.assertEqual(core_resource_capacity(0), 10)
+        self.assertEqual(core_resource_capacity(1), 10)
+        self.assertEqual(core_resource_capacity(3), 15)
+        self.assertEqual(
+            [unit_production_cost("WORKER", n) for n in (0, 19, 20, 24, 25, 29, 30)],
+            [5, 5, 7, 7, 8, 8, 11],
+        )
+        self.assertEqual(
+            [unit_production_cost("VANGUARD", n) for n in (0, 19, 20, 24, 25, 29, 30)],
+            [10, 10, 13, 13, 17, 17, 22],
+        )
+        self.assertEqual(
+            [unit_production_cost("RANGER", n) for n in (0, 19, 20, 24, 25, 29, 30)],
+            [12, 12, 16, 16, 20, 20, 26],
+        )
+        with self.assertRaises(ValueError):
+            unit_production_cost("WORKER", -1)
+        with self.assertRaises(ValueError):
+            unit_production_cost("UNKNOWN", 0)
+
     def test_unexplained_resource_drop_is_journaled_but_explained_drop_is_not(self):
         snapshot = snapshot_from_state(5, {"status": "ACTIVE", "resources": 0,
             "population": 1, "objects": [], "events": []})

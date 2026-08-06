@@ -1,0 +1,4 @@
+# Official Arena Hero SDK development/migration environment.
+# Requires Python >=3.11; pxed production remains on the protocol client until
+# its Arena-only runtime is upgraded and staging gates pass.
+arena-hero==0.2.9
