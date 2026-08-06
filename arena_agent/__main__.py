@@ -768,6 +768,9 @@ async def run(args: argparse.Namespace) -> int:
                             "roles": {
                                 "home_vanguard_id": memory.combat.home_vanguard_id,
                                 "home_ranger_id": memory.combat.home_ranger_id,
+                                "escort_worker_id": memory.combat.escort_worker_id,
+                                "escort_until_tick": memory.combat.escort_until_tick,
+                                "escort_cooldown_until": memory.combat.escort_cooldown_until,
                             },
                             "production_transaction": ({
                                 "unit_type": memory.combat.pending_spawn.unit_type,
