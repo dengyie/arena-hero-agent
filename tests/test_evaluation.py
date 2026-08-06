@@ -58,6 +58,18 @@ class CombatEvaluationTests(unittest.TestCase):
         result = evaluate_combat_session(self.write_rows(rows), "dedupe")
         self.assertEqual(result["event_types"].get("SHOT_HIT"), 1)
 
+    def test_combat_eligibility_is_independent_from_economy_contamination(self):
+        rows = [
+            {"event": "plan", "session": "domains", "tick": 1,
+             "result": {"status": 202}, "state": {
+                 "metric_window_eligible": False,
+                 "combat_metric_eligible": True,
+                 "events": [], "phase_evaluation": {"clean_combat_episodes": []}}},
+            {"event": "received", "session": "domains", "data": {"tick": 1}},
+        ]
+        result = evaluate_combat_session(self.write_rows(rows), "domains")
+        self.assertEqual(result["eligible_resolved_ticks"], 1)
+
     def write_rows(self, rows):
         temp = tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False)
         with temp:

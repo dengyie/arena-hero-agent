@@ -44,7 +44,7 @@ def evaluate_combat_session(journal_path: Path | str, session: str) -> dict[str,
     episodes_by_key: dict[str, dict[str, Any]] = {}
     for tick in resolved:
         state = plans[tick].get("state") or {}
-        if state.get("metric_window_eligible") is True:
+        if state.get("combat_metric_eligible", state.get("metric_window_eligible")) is True:
             eligible += 1
         for event in state.get("events") or []:
             event_id = str(event.get("event_id", ""))

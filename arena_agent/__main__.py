@@ -83,6 +83,24 @@ def received_source_conflict(receipts: list[dict[str, Any]]) -> bool:
     return len(plans) > 1 and any(plan != plans[0] for plan in plans[1:])
 
 
+def received_combat_contaminated(receipts: list[dict[str, Any]],
+                                 defender_ids: set[str]) -> bool:
+    if received_source_conflict(receipts):
+        return True
+    for payload in receipts:
+        if payload.get("source") != "MANUAL":
+            continue
+        plan_raw = payload.get("plan")
+        plan: dict[str, Any] = plan_raw if isinstance(plan_raw, dict) else {}
+        if "core_action" in plan:
+            return True
+        actions_raw = plan.get("unit_actions")
+        actions: dict[str, Any] = actions_raw if isinstance(actions_raw, dict) else {}
+        if defender_ids.intersection(actions):
+            return True
+    return False
+
+
 def reconcile_received_plan(memory: ExplorationMemory, tick: int,
                             accepted_plan: dict[str, Any], receipts: list[dict[str, Any]],
                             shot_modes: dict[str, str]) -> None:
@@ -313,13 +331,11 @@ class PhaseEvaluationMetrics:
         if self.fallback_pending.pop(worker_id, None) is not None:
             self.fallback_outcomes[outcome] = self.fallback_outcomes.get(outcome, 0) + 1
 
-    def observe(self, snapshot: Any, plan: Any, memory: ExplorationMemory, *, eligible: bool) -> None:
-        if not eligible:
+    def observe(self, snapshot: Any, plan: Any, memory: ExplorationMemory, *,
+                economy_eligible: bool, combat_eligible: bool) -> None:
+        if not economy_eligible:
             for worker_id in list(self.fallback_pending):
                 self._close_fallback(worker_id, "ABORTED_CONTAMINATED")
-            if (memory.ledger.combat_episode is not None or
-                    self._completed_episode_count < len(memory.ledger.completed_combat_episodes)):
-                self._combat_episode_contaminated = True
         else:
             for worker_id, source in memory.frontier_selection_sources.items():
                 if source == "fallback":
@@ -340,6 +356,9 @@ class PhaseEvaluationMetrics:
                         worker_id,
                         "HARVEST_AFTER_FALLBACK" if item["harvested_tick"] >= 0 else "EXPIRED_NO_RESOLUTION",
                     )
+        if (not combat_eligible and (memory.ledger.combat_episode is not None or
+                self._completed_episode_count < len(memory.ledger.completed_combat_episodes))):
+            self._combat_episode_contaminated = True
         while self._completed_episode_count < len(memory.ledger.completed_combat_episodes):
             episode = dict(memory.ledger.completed_combat_episodes[self._completed_episode_count])
             episode["outcome"] = (
@@ -506,11 +525,19 @@ async def run(args: argparse.Namespace) -> int:
                         if tick is None:
                             raise ProtocolError("state arrived before tick")
                         source_audit["last_agent_core_action"] = None
+                        combat_receipts_eligible = True
+                        defender_ids = {
+                            unit_id for unit_id in (
+                                memory.combat.home_vanguard_id, memory.combat.home_ranger_id,
+                            ) if unit_id is not None
+                        }
                         for settled_tick in sorted(key for key in accepted_agent_plans if key < tick):
                             accepted_plan, shot_modes = accepted_agent_plans.pop(settled_tick)
                             receipts = received_by_tick.pop(settled_tick, [])
                             if received_source_conflict(receipts):
                                 source_audit["window_contaminated"] = True
+                            if received_combat_contaminated(receipts, defender_ids):
+                                combat_receipts_eligible = False
                             reconcile_received_plan(memory, settled_tick, accepted_plan, receipts, shot_modes)
                             stored = authoritative_received_plan(receipts)
                             stored_core_raw = stored.get("core_action")
@@ -554,8 +581,27 @@ async def run(args: argparse.Namespace) -> int:
                             reconnect_reason = "stale_tick_streak"
                         raw_state = msg["data"]
                         metrics_eligible = not source_audit["window_contaminated"] and not result.get("stale_tick")
+                        safety_events = {
+                            str(event.get("event_type")) for event in snapshot.events
+                            if event.get("event_type") in {
+                                "UNIT_DIED", "UNIT_DESTROYED", "CARGO_LOST", "CARGO_DROPPED",
+                            }
+                        }
+                        upkeep_deficit = any(
+                            event.get("event_type") == "UPKEEP_PAID"
+                            and int((event.get("values") or {}).get("deficit", 0) or 0) > 0
+                            for event in snapshot.events
+                        )
+                        combat_metric_eligible = (
+                            combat_receipts_eligible and not result.get("stale_tick")
+                            and not safety_events and not upkeep_deficit
+                        )
                         resource_supply.observe(snapshot, plan, eligible=metrics_eligible)
-                        phase_evaluation.observe(snapshot, plan, memory, eligible=metrics_eligible)
+                        phase_evaluation.observe(
+                            snapshot, plan, memory,
+                            economy_eligible=metrics_eligible,
+                            combat_eligible=combat_metric_eligible,
+                        )
                         state_summary = {
                             "status": raw_state.get("status"),
                             "resources": raw_state.get("resources"),
@@ -617,6 +663,8 @@ async def run(args: argparse.Namespace) -> int:
                         }
                         state_summary["population_control"] = population_control_metrics(snapshot)
                         state_summary["metric_window_eligible"] = metrics_eligible
+                        state_summary["economy_metric_eligible"] = metrics_eligible
+                        state_summary["combat_metric_eligible"] = combat_metric_eligible
                         state_summary["resource_supply"] = resource_supply.as_dict()
                         state_summary["unexplained_resource_delta"] = unexplained_resource_delta
                         state_summary["phase_evaluation"] = phase_evaluation.as_dict()

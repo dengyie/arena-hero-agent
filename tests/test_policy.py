@@ -14,6 +14,7 @@ from arena_agent.__main__ import (PermanentAuthError, PhaseEvaluationMetrics, Re
                                   effective_combat_mode,
                                   reconcile_received_plan,
                                   received_source_conflict,
+                                  received_combat_contaminated,
                                   websocket_close_requires_reconnect,
                                   resource_transition_audit,
                                   record_population_transition,
@@ -61,6 +62,26 @@ class AgentTests(unittest.TestCase):
             {"source": "AGENT", "plan": {"unit_actions": {"w": {"type": "WAIT"}}}},
             {"source": "AGENT", "plan": {"unit_actions": {"w": {"type": "MOVE", "direction": "UP"}}}},
         ]))
+
+    def test_manual_worker_does_not_contaminate_combat_domain(self):
+        receipts = [{"source": "MANUAL", "plan": {
+            "unit_actions": {"worker": {"type": "MOVE", "direction": "UP"}},
+        }}]
+        self.assertFalse(received_combat_contaminated(receipts, {"vanguard", "ranger"}))
+
+    def test_manual_defender_core_or_agent_conflict_contaminates_combat(self):
+        defender = [{"source": "MANUAL", "plan": {
+            "unit_actions": {"ranger": {"type": "WAIT"}},
+        }}]
+        core = [{"source": "MANUAL", "plan": {"unit_actions": {},
+                                                 "core_action": {"type": "HEAL"}}}]
+        conflict = [
+            {"source": "AGENT", "plan": {"unit_actions": {"ranger": {"type": "WAIT"}}}},
+            {"source": "AGENT", "plan": {"unit_actions": {"ranger": {"type": "MOVE", "direction": "UP"}}}},
+        ]
+        self.assertTrue(received_combat_contaminated(defender, {"ranger"}))
+        self.assertTrue(received_combat_contaminated(core, {"ranger"}))
+        self.assertTrue(received_combat_contaminated(conflict, {"ranger"}))
 
     def test_normal_websocket_close_reconnects(self):
         self.assertTrue(websocket_close_requires_reconnect())
@@ -1487,26 +1508,26 @@ class AgentTests(unittest.TestCase):
             "objects": [core, worker], "events": []})
         first_plan = economy_plan(first, mem)
         mem.frontier_selection_sources["worker"] = "fallback"
-        metrics.observe(first, first_plan, mem, eligible=True)
+        metrics.observe(first, first_plan, mem, economy_eligible=True, combat_eligible=True)
         harvested = snapshot_from_state(2, {"status": "ACTIVE", "resources": 0, "population": 1,
             "objects": [core, {**worker, "cargo": 1}],
                         "events": [{"event_id": "h", "event_type": "HARVEST_SUCCEEDED", "actor_id": "worker", "position": [1, 0]}]})
         harvested_plan = economy_plan(harvested, mem)
-        metrics.observe(harvested, harvested_plan, mem, eligible=True)
+        metrics.observe(harvested, harvested_plan, mem, economy_eligible=True, combat_eligible=True)
         self.assertEqual(metrics.as_dict()["fallback_pending"], 1)
         self.assertEqual(metrics.as_dict()["fallback_outcomes"], {})
         deposited = snapshot_from_state(3, {"status": "ACTIVE", "resources": 0, "population": 1,
             "objects": [core, {**worker, "cargo": 0}],
             "events": [{"event_id": "d", "event_type": "DEPOSIT_SUCCEEDED", "actor_id": "worker", "position": [0, 0]}]})
         deposited_plan = economy_plan(deposited, mem)
-        metrics.observe(deposited, deposited_plan, mem, eligible=True)
+        metrics.observe(deposited, deposited_plan, mem, economy_eligible=True, combat_eligible=True)
         self.assertEqual(metrics.as_dict()["fallback_outcomes"], {"DEPOSIT_AFTER_FALLBACK": 1})
         pending = snapshot_from_state(4, {"status": "ACTIVE", "resources": 0, "population": 1,
             "objects": [core, {**worker, "cargo": 0}], "events": []})
         pending_plan = economy_plan(pending, mem)
         mem.frontier_selection_sources["worker"] = "fallback"
-        metrics.observe(pending, pending_plan, mem, eligible=True)
-        metrics.observe(pending, pending_plan, mem, eligible=False)
+        metrics.observe(pending, pending_plan, mem, economy_eligible=True, combat_eligible=True)
+        metrics.observe(pending, pending_plan, mem, economy_eligible=False, combat_eligible=False)
         self.assertEqual(metrics.as_dict()["fallback_outcomes"]["ABORTED_CONTAMINATED"], 1)
 
     def test_safe_retreat_sticks_until_core_after_threat_visibility_flaps(self):
@@ -1650,14 +1671,34 @@ class AgentTests(unittest.TestCase):
                "values": {"damage": 1}}
         active = snapshot_from_state(1, {"status": "ACTIVE", "resources": 0, "population": 1,
             "objects": [core, worker], "events": [hit]})
-        metrics.observe(active, economy_plan(active, mem), mem, eligible=True)
+        metrics.observe(active, economy_plan(active, mem), mem, economy_eligible=True, combat_eligible=True)
         contaminated = snapshot_from_state(2, {"status": "ACTIVE", "resources": 0, "population": 1,
             "objects": [core, worker], "events": []})
-        metrics.observe(contaminated, economy_plan(contaminated, mem), mem, eligible=False)
+        metrics.observe(contaminated, economy_plan(contaminated, mem), mem, economy_eligible=False, combat_eligible=False)
         closed = snapshot_from_state(10, {"status": "ACTIVE", "resources": 0, "population": 1,
             "objects": [core, worker], "events": []})
-        metrics.observe(closed, economy_plan(closed, mem), mem, eligible=True)
+        metrics.observe(closed, economy_plan(closed, mem), mem, economy_eligible=True, combat_eligible=True)
         self.assertEqual(metrics.as_dict()["clean_combat_episodes"][-1]["outcome"], "EXCLUDED_CONTAMINATED")
+
+    def test_economy_contamination_does_not_exclude_authoritative_combat_episode(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        ranger = {"kind": "UNIT", "id": "ranger", "controlled": True,
+                  "position": [1, 0], "unit_type": "RANGER", "cargo": 0, "hp": 2}
+        memory = ExplorationMemory()
+        metrics = PhaseEvaluationMetrics()
+        memory.ledger.combat_episode = {
+            "start_tick": 1, "end_tick": 9, "precision_shots": 1,
+            "cell_intercept_shots": 0, "sweeps": 0, "friendly_deaths": 0,
+            "friendly_cargo_lost": 0,
+        }
+        memory.ledger.completed_combat_episodes.append(memory.ledger.combat_episode)
+        memory.ledger.combat_episode = None
+        snapshot = snapshot_from_state(9, {"status": "ACTIVE", "resources": 1,
+            "population": 1, "objects": [core, ranger], "events": []})
+        metrics.observe(snapshot, economy_plan(snapshot, memory), memory,
+                        economy_eligible=False, combat_eligible=True)
+        self.assertEqual(metrics.as_dict()["clean_combat_episodes"][-1]["outcome"],
+                         "CLEAN_COMPLETE")
 
     def test_phase_evaluation_consumes_episode_closed_on_contaminated_tick(self):
         core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
@@ -1672,7 +1713,7 @@ class AgentTests(unittest.TestCase):
             "status": "ACTIVE", "resources": 0, "population": 1,
             "objects": [core, worker], "events": [],
         })
-        metrics.observe(snapshot, economy_plan(snapshot, mem), mem, eligible=False)
+        metrics.observe(snapshot, economy_plan(snapshot, mem), mem, economy_eligible=False, combat_eligible=False)
         episodes = metrics.as_dict()["clean_combat_episodes"]
         self.assertEqual(len(episodes), 1)
         self.assertEqual(episodes[0]["outcome"], "EXCLUDED_CONTAMINATED")

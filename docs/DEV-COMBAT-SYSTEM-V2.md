@@ -89,6 +89,16 @@ window and cannot confirm movement edges, combat submissions, spawn acceptance,
 population attribution, or resource attribution. Duplicate identical receipts
 remain idempotent.
 
+Evaluation eligibility is domain-specific. `economy_metric_eligible` remains false
+for an over-cap baseline or any MANUAL receipt and is the only basis for economy
+ROI/fallback throughput. `combat_metric_eligible` is evaluated per Tick and is
+false for conflicting AGENT receipts, stale submission, MANUAL Core action,
+MANUAL action on the bound Vanguard/Ranger, upkeep deficit, friendly death, or
+cargo loss. A MANUAL Worker-only action does not contaminate an otherwise
+authoritative combat episode, but it never becomes Agent movement or economy
+evidence. C12 may use combat eligibility for its 50-Tick/episode gates while
+reporting economy ROI as ineligible separately.
+
 The JSONL journal rotates before 32 MiB with bounded backups. Evaluators scan
 rotated segments oldest-to-newest and deduplicate server events by `event_id`.
 Oversized pre-rotation legacy files are compressed once and remain evaluator-readable.
