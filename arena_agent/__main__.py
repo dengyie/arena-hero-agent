@@ -704,6 +704,7 @@ async def run(args: argparse.Namespace) -> int:
                             worker.id: {
                                 "position": list(worker.position),
                                 "cargo": worker.cargo,
+                                "on_visible_resource": worker.position in snapshot.resource_cells,
                                 "action": plan.unit_actions.get(worker.id, {}).get("type"),
                                 "intent_kind": plan.worker_intents.get(worker.id, (None, None))[1],
                                 "intent_target": (list(plan.worker_intents[worker.id][0])

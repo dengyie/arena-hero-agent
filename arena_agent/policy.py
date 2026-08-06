@@ -530,6 +530,7 @@ class ExplorationMemory:
             elif kind == "HARVEST_FAILED" and pos is not None:
                 obs = self.resources.setdefault(pos, ResourceObservation(0))
                 obs.status = "failed"
+                obs.last_seen_tick = state.tick
                 obs.failure_count += 1
                 self.active_targets.pop(actor_id, None)
             elif kind == "DEPOSIT_FAILED":
@@ -1215,6 +1216,13 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None, *,
     memory = memory or ExplorationMemory()
     memory.observe(state)
     memory.apply_events(state)
+    # Resolution events describe the previous Tick. If this authoritative state
+    # still exposes the cell as RESOURCE, current visibility wins over a prior
+    # HARVEST_FAILED/depletion result.
+    for resource in state.resource_cells:
+        observation = memory.resources.setdefault(resource, ResourceObservation(state.tick))
+        observation.last_seen_tick = state.tick
+        observation.status = "visible"
     memory.allocation_count = 0
     memory.allocation_total_cost = 0
     memory.begin_frontier_budget()
@@ -1360,8 +1368,6 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None, *,
                          target=state.core_position)
         return _plan(actions, memory, policy_state="CORE_FULL")
 
-    # Task assignment: cargo, risk, visible resource, then bounded frontier.
-    resource_reserved: set[Position] = set()
     frontier_reserved: set[Position] = set()
     for worker in workers:
         if worker.cargo > 0 and state.core_position:
@@ -1374,11 +1380,24 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None, *,
         if worker.id in desired or worker.id not in memory.safe_retreat_workers or state.core_position is None:
             continue
         desired[worker.id] = (worker, state.core_position, "RETURN_SAFE")
+
+    # Current-state resource underfoot preempts stale RESOURCE/EXPLORE targets,
+    # but never cargo return, healing, or threat retreat.
+    for worker in workers:
+        if (worker.id not in desired and worker.cargo == 0
+                and (worker.hp is None or worker.hp > 1)
+                and worker.position in state.resource_cells):
+            desired[worker.id] = (worker, worker.position, "RESOURCE")
+    resource_reserved: set[Position] = {
+        worker.position for worker, _, kind in desired.values() if kind == "RESOURCE"
+    }
+
     empty = [w for w in workers if w.id not in desired]
     eligible_resources = [worker for worker in empty if worker.hp is None or worker.hp > 1]
     resource_assignments = allocate_visible_resources(
         eligible_resources,
-        memory.visible_targets(state),
+        (resource for resource in memory.visible_targets(state)
+         if resource not in resource_reserved),
         lambda worker, resource: plan_path(
             worker.position, {resource}, obstacles, movement_blocked_cells(state, worker.id),
         ),

@@ -49,6 +49,53 @@ class AgentTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             unit_production_cost("UNKNOWN", 0)
 
+    def test_worker_at_current_visible_resource_preempts_frontier_and_harvests(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        worker = {"kind": "UNIT", "id": "worker", "controlled": True,
+                  "position": [5, 0], "unit_type": "WORKER", "cargo": 0, "hp": 2}
+        other = {"kind": "UNIT", "id": "other", "controlled": True,
+                 "position": [1, 0], "unit_type": "WORKER", "cargo": 0, "hp": 2}
+        resource = {"kind": "RESOURCE", "positions": [[5, 0], [8, 0]]}
+        state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 0,
+            "population": 2, "objects": [core, worker, other, resource], "events": []})
+        plan = economy_plan(state, ExplorationMemory(), combat_mode="current")
+        self.assertEqual(plan.unit_actions["worker"], {"type": "HARVEST"})
+        self.assertNotEqual(plan.unit_actions["other"], {"type": "HARVEST"})
+
+    def test_current_resource_is_reconsidered_after_harvest_failure(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        worker = {"kind": "UNIT", "id": "worker", "controlled": True,
+                  "position": [5, 0], "unit_type": "WORKER", "cargo": 0, "hp": 2}
+        resource = {"kind": "RESOURCE", "positions": [[5, 0]]}
+        memory = ExplorationMemory()
+        state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 0,
+            "population": 1, "objects": [core, worker, resource], "events": []})
+        self.assertEqual(economy_plan(state, memory).unit_actions["worker"], {"type": "HARVEST"})
+        failed = snapshot_from_state(2, {"status": "ACTIVE", "resources": 0,
+            "population": 1, "objects": [core, worker, resource],
+            "events": [{"event_id": "failed", "event_type": "HARVEST_FAILED",
+                        "actor_id": "worker", "position": [5, 0]}]})
+        next_plan = economy_plan(failed, memory)
+        self.assertEqual(next_plan.unit_actions["worker"], {"type": "HARVEST"})
+
+    def test_visible_resource_after_failure_can_be_reassigned_to_other_worker(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        failed_worker = {"kind": "UNIT", "id": "failed-worker", "controlled": True,
+                         "position": [7, 0], "unit_type": "WORKER", "cargo": 0, "hp": 2}
+        other = {"kind": "UNIT", "id": "other", "controlled": True,
+                 "position": [1, 0], "unit_type": "WORKER", "cargo": 0, "hp": 2}
+        resource = {"kind": "RESOURCE", "positions": [[5, 0]]}
+        state = snapshot_from_state(2, {"status": "ACTIVE", "resources": 0,
+            "population": 2, "objects": [core, failed_worker, other, resource],
+            "events": [{"event_id": "failed-other", "event_type": "HARVEST_FAILED",
+                        "actor_id": "failed-worker", "position": [5, 0]}]})
+        plan = economy_plan(state, ExplorationMemory())
+        resource_intents = {
+            worker_id: target for worker_id, (target, kind) in plan.worker_intents.items()
+            if kind == "RESOURCE"
+        }
+        self.assertIn((5, 0), resource_intents.values())
+
     def test_unexplained_resource_drop_is_journaled_but_explained_drop_is_not(self):
         snapshot = snapshot_from_state(5, {"status": "ACTIVE", "resources": 0,
             "population": 1, "objects": [], "events": []})
