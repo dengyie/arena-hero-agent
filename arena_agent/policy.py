@@ -497,8 +497,11 @@ class ExplorationMemory:
         }
         self.safe_retreat_workers = {
             worker.id for worker in state.workers
-            if worker.id in self.safe_retreat_workers and worker.position != state.core_position
-            and worker.cargo <= 0 and (worker.hp is None or worker.hp > 1)
+            if worker.id in self.safe_retreat_workers
+            and worker.cargo <= 0
+            and (worker.hp is None or worker.hp > 1)
+            and (state.core_position is None
+                 or manhattan(worker.position, state.core_position) > CORE_GUARD_RADIUS)
         }
         self.ledger.trim(state.tick)
         self.traffic.trim(state.tick)

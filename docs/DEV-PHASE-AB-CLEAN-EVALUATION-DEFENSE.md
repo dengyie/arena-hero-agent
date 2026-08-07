@@ -338,16 +338,16 @@ if hp <= 1:
 empty + enemy_threatens(worker):
   不分配该 Worker 为资源/探索攻击诱饵；
   若 Core 存在，目标=Core，intent=RETURN_SAFE
-  到 Core 后 WAIT（不发 HEAL，除非 hp<=1）
+  当前 threat 消失且进入 Core 防御半径3后结束撤退
 ```
 
-`RETURN_SAFE` 是 plan intent 标签，不是新的官方 action。它只在当前 threat 下将空载 Worker 移至 Core；不追敌，不阻断其他不受威胁 Worker 的资源任务。
+`RETURN_SAFE` 是 plan intent 标签，不是新的官方 action。它将当前受威胁的空载 Worker 移向 Core；不追敌，不阻断其他不受威胁 Worker 的资源任务。
 
-上线后真实日志发现瞬时 visibility flap 会导致 `RETURN_SAFE ↔ EXPLORE` 每 Tick切换、Worker 在两格间往返。修复为 sticky retreat transaction：首次当前 threat 将空载健康 Worker ID 写入仅己方 `safe_retreat_workers`；在到达 Core、开始携货或进入受伤治疗优先级前，即使下一 Tick威胁暂时不可见也持续 `RETURN_SAFE`。journal 必须同时区分当前 `threatened_workers` 与仍在返程的 `safe_retreat_workers`；后者不是持久敌方事实。上线真实验收：威胁消失后6名撤离Worker仍持续向Core收敛，样本为 `254… 41→27`、`a203… 83→67`、`10ced… 22→11`；没有旧版一格探索/一格撤离的无限往返。少量单步非进展仍来自正常有界路径/traffic选择。
+上线后真实日志发现瞬时 visibility flap 会导致 `RETURN_SAFE ↔ EXPLORE` 每 Tick切换、Worker 在两格间往返。修复为 sticky retreat transaction：首次当前 threat 将空载健康 Worker ID 写入仅己方 `safe_retreat_workers`；开始携货或进入受伤治疗优先级前，即使下一 Tick威胁暂时不可见也持续 `RETURN_SAFE`，但当前 threat 已消失且 Worker 已进入 Core Manhattan 半径3时结束事务。若半径内仍有当前 threat，Worker 会重新进入 `safe_retreat_workers` 并继续撤退。journal 必须同时区分当前 `threatened_workers` 与仍在返程的 `safe_retreat_workers`；后者不是持久敌方事实。
 
-随后真实日志又发现多个 safe retreat Worker 到 Core 邻域时互相争用，出现距离 `1↔2` 的最后两格回摆。修复为把 `RETURN_SAFE` 纳入既有 Core ingress queue：近区仅队首可接近 Core，其他撤离Worker显式 `CORE_INGRESS_HOLD`；`RETURN_CORE`（携货交付）永远排在同一批新进入者的 `RETURN_SAFE` 之前。队首到Core释放 retreat后，下一名才推进。
+仍处于 `RETURN_SAFE` 的 Worker 纳入既有 Core ingress queue：近区仅队首可继续接近 Core，其他撤离Worker显式 `CORE_INGRESS_HOLD`；`RETURN_CORE`（携货交付）永远排在同一批新进入者的 `RETURN_SAFE` 之前。当前 threat 已消失且进入半径3的空载Worker先退出撤退事务，不再占用 ingress。
 
-线上复验又暴露每 Tick按距离重排 queue 会让后来 carrier反复插入已排队 safe retreat，造成近区饥饿。最终规则：已有 ingress成员保持相对顺序；离开 `RETURN_CORE/RETURN_SAFE` 事务者移除；仅新进入者追加，并在该新批次内使用 `RETURN_CORE` 优先。这不让撤离抢占已排队交付，也保证已排队撤离不会被后续carrier无限饿死。真实验收：`515…` 作为队首从 RETURN_SAFE distance `3→0` 后释放为 EXPLORE；`d585…` 先在 `CORE_INGRESS_HOLD` 等待，轮到队首后从 `3→0` 并释放；`975…` 携货 RETURN_CORE 也完成并恢复 EXPLORE。
+最终 ingress 规则：已有有效成员保持相对顺序；离开 `RETURN_CORE/RETURN_SAFE` 事务者移除；仅新进入者追加，并在该新批次内使用 `RETURN_CORE` 优先。这既保留远端 sticky retreat 的连续收敛，也避免已安全的空载Worker继续挤占真正的交付队列。
 
 ### 6.3 Vanguard 防守规则
 
@@ -438,7 +438,7 @@ path.py 的 budget/node cap
 
 1. carrying Worker + visible敌方 threat：仍 RETURN_CORE，journal reason正确；
 2. injured Worker + threat：仍 RETURN_HEAL；
-3. empty Worker + threat：RETURN_SAFE 到 Core；敌方不在当前 state后恢复正常可见资源/frontier；
+3. empty Worker + threat：RETURN_SAFE 向 Core 收敛；敌方不在当前 state且已进入Core半径3后恢复正常可见资源/frontier；
 4. 无 threat 时，既有 visible resource/return/frontier actions不变；
 5. Vanguard 在 Core 防区外相邻敌人 WAIT；Core 防区内且经济风险存在才 SWEEP；
 6. Ranger 在 carrying Worker threat envelope 内 WAIT；其他合法 Core-local shot保留；

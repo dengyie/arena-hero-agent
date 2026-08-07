@@ -1680,6 +1680,42 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(plan.unit_actions["empty"], {"type": "WAIT"})
         self.assertEqual(plan.unit_actions["carrying"]["type"], "MOVE")
 
+    def test_empty_safe_retreat_completes_inside_core_guard_without_ingress(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        enemy = {"kind": "UNIT", "id": "enemy", "controlled": False,
+                 "position": [6, 0], "unit_type": "WORKER", "hp": 2}
+        worker = {"kind": "UNIT", "id": "worker", "controlled": True,
+                  "position": [4, 0], "unit_type": "WORKER", "cargo": 0, "hp": 2}
+        memory = ExplorationMemory()
+        threatened = snapshot_from_state(1, {"status": "ACTIVE", "resources": 20,
+            "population": 1, "objects": [core, worker, enemy], "events": []})
+        first = economy_plan(threatened, memory)
+        self.assertEqual(first.worker_intents["worker"], ((0, 0), "RETURN_SAFE"))
+        state = snapshot_from_state(2, {"status": "ACTIVE", "resources": 20,
+            "population": 1, "objects": [core, {**worker, "position": [3, 0]}], "events": []})
+        plan = economy_plan(state, memory)
+        self.assertNotIn("worker", memory.safe_retreat_workers)
+        self.assertNotIn("worker", memory.traffic.ingress_queue)
+        self.assertNotEqual(plan.worker_intents["worker"][1], "RETURN_SAFE")
+        self.assertNotEqual((plan.worker_intents.get("worker") or (None, None))[0], (0, 0))
+        self.assertNotEqual(plan.unit_actions["worker"], {"type": "DEPOSIT"})
+
+    def test_carrying_worker_inside_core_guard_still_returns_to_exact_core(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        enemy = {"kind": "UNIT", "id": "enemy", "controlled": False,
+                 "position": [6, 0], "unit_type": "WORKER", "hp": 2}
+        worker = {"kind": "UNIT", "id": "worker", "controlled": True,
+                  "position": [4, 0], "unit_type": "WORKER", "cargo": 1, "hp": 2}
+        memory = ExplorationMemory()
+        threatened = snapshot_from_state(1, {"status": "ACTIVE", "resources": 20,
+            "population": 1, "objects": [core, worker, enemy], "events": []})
+        first = economy_plan(threatened, memory)
+        self.assertEqual(first.worker_intents["worker"], ((0, 0), "RETURN_CORE"))
+        state = snapshot_from_state(2, {"status": "ACTIVE", "resources": 20,
+            "population": 1, "objects": [core, {**worker, "position": [3, 0]}], "events": []})
+        plan = economy_plan(state, memory)
+        self.assertEqual(plan.worker_intents["worker"], ((0, 0), "RETURN_CORE"))
+
     def test_phase_evaluation_attributes_fallback_once_and_excludes_contamination(self):
         core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
         worker = {"kind": "UNIT", "id": "worker", "controlled": True, "position": [1, 0], "unit_type": "WORKER", "cargo": 0}
@@ -1711,23 +1747,23 @@ class AgentTests(unittest.TestCase):
         metrics.observe(pending, pending_plan, mem, economy_eligible=False, combat_eligible=False)
         self.assertEqual(metrics.as_dict()["fallback_outcomes"]["ABORTED_CONTAMINATED"], 1)
 
-    def test_safe_retreat_sticks_until_core_after_threat_visibility_flaps(self):
+    def test_safe_retreat_sticks_outside_guard_then_clears_inside_guard(self):
         core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
         worker = {"kind": "UNIT", "id": "worker", "controlled": True,
-                  "position": [2, 0], "unit_type": "WORKER", "cargo": 0}
+                  "position": [4, 0], "unit_type": "WORKER", "cargo": 0}
         enemy = {"kind": "UNIT", "id": "enemy", "controlled": False,
-                 "position": [3, 0], "unit_type": "WORKER"}
+                 "position": [6, 0], "unit_type": "WORKER"}
         mem = ExplorationMemory()
         threatened = snapshot_from_state(1, {"status": "ACTIVE", "resources": 0, "population": 1,
             "objects": [core, worker, enemy], "events": []})
         first = economy_plan(threatened, mem)
         self.assertEqual(first.worker_intents["worker"], ((0, 0), "RETURN_SAFE"))
         unthreatened = snapshot_from_state(2, {"status": "ACTIVE", "resources": 0, "population": 1,
-            "objects": [core, {**worker, "position": [1, 0]}], "events": []})
+            "objects": [core, worker], "events": []})
         second = economy_plan(unthreatened, mem)
         self.assertEqual(second.worker_intents["worker"], ((0, 0), "RETURN_SAFE"))
         arrived = snapshot_from_state(3, {"status": "ACTIVE", "resources": 0, "population": 1,
-            "objects": [core, {**worker, "position": [0, 0]}], "events": []})
+            "objects": [core, {**worker, "position": [3, 0]}], "events": []})
         third = economy_plan(arrived, mem)
         self.assertNotEqual(third.worker_intents["worker"][1], "RETURN_SAFE")
 
@@ -1753,7 +1789,7 @@ class AgentTests(unittest.TestCase):
         self.assertNotIn("first", mem.safe_retreat_workers)
         self.assertEqual(next_plan.unit_actions["second"]["type"], "MOVE")
 
-    def test_ingress_queue_does_not_starve_existing_safe_retreat_with_new_carrier(self):
+    def test_completed_safe_retreat_leaves_ingress_for_new_carrier(self):
         core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
         retreat = {"kind": "UNIT", "id": "retreat", "controlled": True,
                    "position": [2, 0], "unit_type": "WORKER", "cargo": 0}
@@ -1769,9 +1805,11 @@ class AgentTests(unittest.TestCase):
         second = snapshot_from_state(2, {"status": "ACTIVE", "resources": 0, "population": 2,
             "objects": [core, {**retreat, "position": [1, 0]}, carrier], "events": []})
         plan = economy_plan(second, mem)
-        self.assertEqual(mem.traffic.ingress_queue[:2], ("retreat", "carrier"))
+        self.assertNotIn("retreat", mem.safe_retreat_workers)
+        self.assertEqual(mem.traffic.ingress_queue, ("carrier",))
         self.assertEqual(plan.unit_actions["carrier"]["type"], "MOVE")
-        self.assertEqual(plan.unit_actions["retreat"], {"type": "WAIT"})
+        self.assertNotEqual(plan.worker_intents["retreat"][1], "RETURN_SAFE")
+        self.assertNotEqual(plan.unit_actions["retreat"], {"type": "DEPOSIT"})
 
     def test_remote_ingress_head_does_not_block_first_local_carrier(self):
         core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
@@ -1790,7 +1828,7 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(plan.unit_actions["local"], {"type": "MOVE", "direction": "LEFT"})
         self.assertEqual(plan.unit_actions["remote"]["type"], "MOVE")
 
-    def test_local_carrier_preempts_earlier_local_safe_retreat(self):
+    def test_local_safe_retreat_completes_before_carrier_ingress(self):
         core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
         safe = {"kind": "UNIT", "id": "safe", "controlled": True,
                 "position": [3, 0], "unit_type": "WORKER", "cargo": 0, "hp": 2}
@@ -1804,8 +1842,11 @@ class AgentTests(unittest.TestCase):
         state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 5,
             "population": 2, "objects": [core, safe, carrier], "events": []})
         plan = economy_plan(state, memory)
+        self.assertNotIn("safe", memory.safe_retreat_workers)
+        self.assertEqual(memory.traffic.ingress_queue, ("carrier",))
         self.assertEqual(plan.unit_actions["carrier"]["type"], "MOVE")
-        self.assertEqual(plan.unit_actions["safe"], {"type": "WAIT"})
+        self.assertNotEqual(plan.worker_intents["safe"][1], "RETURN_SAFE")
+        self.assertNotEqual(plan.unit_actions["safe"], {"type": "DEPOSIT"})
 
     def test_stalled_local_carrier_yields_ingress_token(self):
         traffic = ExplorationMemory().traffic
