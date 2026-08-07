@@ -103,6 +103,24 @@ Core resource capacity remains `max(10, N*5)`. The implementation's
 pxed production remains the direct protocol client because its Python is 3.10 and
 SDK 0.2.9 requires Python >=3.11.
 
+### 2.2.2 Full-Core population-19 capacity recovery
+
+`CORE_RESOURCE_FULL` must serialize cargo ingress, not freeze the entire economy.
+When population is exactly 19, Core is full, a single carrying Worker occupies the
+Core cell, the Core is stationary/healthy, no recent Core damage or pending spawn
+exists, and the dynamic Worker cost leaves the protected reserve, the sole capacity
+recovery exception is an atomic carrier `MOVE` plus Core `SPAWN WORKER`. This raises
+capacity from 95 to 100 without dropping cargo, self-destructing, or manufacturing a
+death. Resolution requires later `UNIT_MOVE_SUCCEEDED`, `CORE_SPAWN_SUCCEEDED`,
+population/new-Worker confirmation, then `DEPOSIT_SUCCEEDED`.
+
+Other carrying Workers remain held by the local Core ingress transaction. Empty
+Workers continue bounded exploration; while Core is full they do not start new
+HARVEST/resource assignments, avoiding additional cargo backlog. Population 20+,
+recent Core damage, spawn failure/cooldown, insufficient reserve, moving/damaged Core,
+or occupied-capacity conflicts block expansion but still must not globally freeze
+empty Workers.
+
 ### 2.3 Authoritative operations contract
 
 HTTP `202` is not final per-actor authority when multiple source plans exist for

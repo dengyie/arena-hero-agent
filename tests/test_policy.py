@@ -1354,7 +1354,7 @@ class AgentTests(unittest.TestCase):
             ], "events": [full_event]})
         p = economy_plan(s, mem)
         self.assertTrue(mem.core_full)
-        self.assertEqual(p.policy_state, "CORE_FULL")
+        self.assertEqual(p.policy_state, "CORE_FULL_ACTIVE")
         self.assertEqual(p.unit_actions["worker"], {"type": "WAIT"})
 
     def test_authoritative_spare_capacity_clears_core_full_pause(self):
@@ -2067,23 +2067,89 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(plan.core_action, {"type": "SPAWN", "unit_type": "WORKER"})
         self.assertEqual(plan.unit_actions["worker-0"], {"type": "MOVE", "direction": "UP"})
 
-    def test_external_recovery_population_ceiling_holds_without_spawn(self):
+    def test_population_19_full_core_uses_worker_capacity_recovery_transaction(self):
         mem = ExplorationMemory()
         core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
         workers = [
             {"kind": "UNIT", "id": f"worker-{index}", "controlled": True,
              "position": [0, 0] if index == 0 else [index, 0],
              "unit_type": "WORKER", "cargo": 1 if index == 0 else 0}
-            for index in range(MAX_EXTERNAL_RECOVERY_POPULATION - 1)
+            for index in range(17)
+        ]
+        defenders = [
+            {"kind": "UNIT", "id": "guard", "controlled": True,
+             "position": [0, 2], "unit_type": "VANGUARD", "cargo": 0, "hp": 4},
+            {"kind": "UNIT", "id": "ranger", "controlled": True,
+             "position": [0, 3], "unit_type": "RANGER", "cargo": 0, "hp": 2},
         ]
         full = {"event_id": "full-at-ceiling", "event_type": "DEPOSIT_FAILED",
                 "reason_code": "CORE_RESOURCE_FULL", "actor_id": "worker-0", "position": [0, 0]}
         state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 95,
-            "population": MAX_EXTERNAL_RECOVERY_POPULATION, "objects": [core, *workers], "events": [full]})
+            "population": MAX_EXTERNAL_RECOVERY_POPULATION,
+            "objects": [core, *workers, *defenders], "events": [full]})
         plan = economy_plan(state, mem)
-        self.assertEqual(plan.policy_state, "CORE_FULL_EXTERNAL_CAP_HOLD")
+        self.assertEqual(plan.policy_state, "CORE_FULL_POP19_WORKER_RECOVERY")
+        self.assertEqual(plan.core_action, {"type": "SPAWN", "unit_type": "WORKER"})
+        self.assertEqual(plan.unit_actions["worker-0"], {"type": "MOVE", "direction": "UP"})
+        self.assertFalse(any(action["type"] in {"DROP_BEACON", "SELF_DESTRUCT"}
+                             for action in plan.unit_actions.values()))
+
+        spawned = {"kind": "UNIT", "id": "capacity-worker", "controlled": True,
+                   "position": [0, 0], "unit_type": "WORKER", "cargo": 0, "hp": 2}
+        moved_workers = [{**worker, "position": [0, -1]}
+                         if worker["id"] == "worker-0" else worker for worker in workers]
+        next_state = snapshot_from_state(2, {"status": "ACTIVE", "resources": 90,
+            "population": 20, "objects": [core, *moved_workers, *defenders, spawned],
+            "events": [
+                {"event_id": "capacity-move", "event_type": "UNIT_MOVE_SUCCEEDED",
+                 "actor_id": "worker-0", "position": [0, -1]},
+                {"event_id": "capacity-spawn", "event_type": "CORE_SPAWN_SUCCEEDED",
+                 "actor_id": "core", "values": {"unit_type": "WORKER", "cost": 5}},
+            ]})
+        followup = economy_plan(next_state, mem)
+        self.assertFalse(mem.core_full)
+        self.assertEqual(followup.worker_intents["worker-0"], ((0, 0), "RETURN_CORE"))
+        self.assertNotIn("SELF_DESTRUCT", {action["type"] for action in followup.unit_actions.values()})
+
+    def test_population_20_full_core_does_not_expand_or_destroy_units(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True,
+                "position": [0, 0], "hp": 5, "shield": 5, "state": "NORMAL"}
+        workers = [
+            {"kind": "UNIT", "id": f"worker-{index}", "controlled": True,
+             "position": [0, 0] if index == 0 else [index, 0],
+             "unit_type": "WORKER", "cargo": 1 if index == 0 else 0, "hp": 2}
+            for index in range(18)
+        ]
+        defenders = [
+            {"kind": "UNIT", "id": "guard", "controlled": True,
+             "position": [0, 2], "unit_type": "VANGUARD", "cargo": 0, "hp": 4},
+            {"kind": "UNIT", "id": "ranger", "controlled": True,
+             "position": [0, 3], "unit_type": "RANGER", "cargo": 0, "hp": 2},
+        ]
+        full = {"event_id": "full-pop20", "event_type": "DEPOSIT_FAILED",
+                "reason_code": "CORE_RESOURCE_FULL", "actor_id": "worker-0", "position": [0, 0]}
+        state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 100,
+            "population": 20, "objects": [core, *workers, *defenders], "events": [full]})
+        plan = economy_plan(state, ExplorationMemory())
         self.assertIsNone(plan.core_action)
-        self.assertEqual(plan.unit_actions["worker-0"], {"type": "WAIT"})
+        self.assertFalse(any(action["type"] in {"DROP_BEACON", "SELF_DESTRUCT"}
+                             for action in plan.unit_actions.values()))
+
+    def test_core_full_hold_does_not_freeze_empty_worker_exploration(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True,
+                "position": [0, 0], "hp": 5, "shield": 5, "state": "NORMAL"}
+        carrier = {"kind": "UNIT", "id": "carrier", "controlled": True,
+                   "position": [0, 0], "unit_type": "WORKER", "cargo": 1, "hp": 2}
+        scout = {"kind": "UNIT", "id": "scout", "controlled": True,
+                 "position": [8, 0], "unit_type": "WORKER", "cargo": 0, "hp": 2}
+        full = {"event_id": "full-no-freeze", "event_type": "DEPOSIT_FAILED",
+                "reason_code": "CORE_RESOURCE_FULL", "actor_id": "carrier", "position": [0, 0]}
+        state = snapshot_from_state(1, {"status": "ACTIVE", "resources": 100,
+            "population": 20, "objects": [core, carrier, scout], "events": [full]})
+        plan = economy_plan(state, ExplorationMemory())
+        self.assertEqual(plan.unit_actions["carrier"], {"type": "WAIT"})
+        self.assertIn(plan.unit_actions["scout"]["type"], {"MOVE", "WAIT"})
+        self.assertIn("scout", plan.worker_intents)
 
     def test_core_full_population_19_can_atomically_evict_carrier_and_spawn_missing_ranger(self):
         core = {"kind": "CORE", "id": "core", "controlled": True,
@@ -2109,8 +2175,8 @@ class AgentTests(unittest.TestCase):
         blocked = economy_plan(
             state, ExplorationMemory(), combat_mode="live-sweep", combat_production_guard=False,
         )
-        self.assertEqual(blocked.policy_state, "CORE_FULL_EXTERNAL_CAP_HOLD")
-        self.assertIsNone(blocked.core_action)
+        self.assertEqual(blocked.policy_state, "CORE_FULL_POP19_WORKER_RECOVERY")
+        self.assertEqual(blocked.core_action, {"type": "SPAWN", "unit_type": "WORKER"})
 
     def test_core_full_evictor_may_share_singly_occupied_friendly_adjacent_cell(self):
         memory = ExplorationMemory()
@@ -2166,7 +2232,7 @@ class AgentTests(unittest.TestCase):
             ], "events": events})
         p = economy_plan(s, mem)
         self.assertGreater(mem.recovery_cooldown_until, 20)
-        self.assertEqual(p.policy_state, "CORE_FULL")
+        self.assertEqual(p.policy_state, "CORE_FULL_ACTIVE")
         self.assertIsNone(p.core_action)
 
     def test_core_full_recovery_is_disabled_after_core_damage(self):
@@ -2183,7 +2249,7 @@ class AgentTests(unittest.TestCase):
                  "position": [0, 0], "unit_type": "WORKER", "cargo": 1},
             ], "events": events})
         p = economy_plan(s, mem)
-        self.assertEqual(p.policy_state, "CORE_FULL")
+        self.assertEqual(p.policy_state, "CORE_FULL_ACTIVE")
         self.assertEqual(p.unit_actions["worker"], {"type": "WAIT"})
         self.assertIsNone(p.core_action)
 

@@ -1297,6 +1297,7 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None, *,
     reserved_departures: Counter[Position] = Counter()
     reserved_edges: set[tuple[Position, Position]] = set()
     desired: dict[str, tuple[Unit, Position, str]] = {}
+    core_full_held_carriers: set[str] = set()
     core_action: dict[str, Any] | None = None
     primary_state, primary_target, primary_path = "EXPLORE", None, None
 
@@ -1306,9 +1307,11 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None, *,
         leader = core_carriers[0] if len(core_carriers) == 1 else None
         evictor = core_carriers[-1] if len(core_carriers) > 1 else None
         for worker in workers:
-            actions[worker.id] = {"type": "WAIT"}
-            if worker.cargo > 0 and worker.position != state.core_position:
-                memory.traffic.holds[worker.id] = "CORE_FULL_HOLD"
+            if worker.cargo > 0:
+                actions[worker.id] = {"type": "WAIT"}
+                core_full_held_carriers.add(worker.id)
+                if worker.position != state.core_position:
+                    memory.traffic.holds[worker.id] = "CORE_FULL_HOLD"
         actor = evictor or leader
         if actor is not None:
             external_over_cap = len(workers) > MAX_ECONOMY_WORKERS
@@ -1352,6 +1355,23 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None, *,
                                 combat_decisions=combat_decisions,
                             )
                     if recovery_ceiling_reached:
+                        worker_cost = unit_production_cost("WORKER", state.population)
+                        pop19_worker_recovery = (
+                            state.population == MAX_EXTERNAL_RECOVERY_POPULATION
+                            and state.resources - worker_cost >= COMBAT_RESERVE
+                            and state.core_state in {None, "NORMAL"}
+                            and (state.core_hp is None or state.core_hp >= 5)
+                            and (state.core_shield is None or state.core_shield >= 5)
+                            and memory.combat.pending_spawn is None
+                        )
+                        if pop19_worker_recovery:
+                            return _plan(
+                                actions, memory,
+                                policy_state="CORE_FULL_POP19_WORKER_RECOVERY",
+                                target=state.core_position,
+                                core_action={"type": "SPAWN", "unit_type": "WORKER"},
+                                combat_decisions=combat_decisions,
+                            )
                         actions[actor.id] = {"type": "WAIT"}
                         reserved_arrivals.clear()
                         reserved_departures.clear()
@@ -1362,15 +1382,14 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None, *,
                                         else "CORE_FULL_RECOVERY")
                         return _plan(actions, memory, policy_state=policy_state,
                                      target=state.core_position, core_action=core_action)
-        if (actor is leader and recovery_allowed
-                and state.population >= MAX_EXTERNAL_RECOVERY_POPULATION):
-            return _plan(actions, memory, policy_state="CORE_FULL_EXTERNAL_CAP_HOLD",
-                         target=state.core_position)
-        return _plan(actions, memory, policy_state="CORE_FULL")
+        # Keep only cargo transactions held. Empty Workers continue bounded
+        # exploration below; Core-full state suppresses new harvest assignment.
 
     frontier_reserved: set[Position] = set()
     for worker in workers:
-        if worker.cargo > 0 and state.core_position:
+        if worker.id in core_full_held_carriers:
+            desired[worker.id] = (worker, worker.position, "CORE_FULL_HOLD")
+        elif worker.cargo > 0 and state.core_position:
             desired[worker.id] = (worker, state.core_position, "RETURN_CORE")
     for worker in workers:
         if worker.id in desired or worker.hp is None or worker.hp > 1 or state.core_position is None:
@@ -1386,7 +1405,7 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None, *,
     for worker in workers:
         if (worker.id not in desired and worker.cargo == 0
                 and (worker.hp is None or worker.hp > 1)
-                and worker.position in state.resource_cells):
+                and not memory.core_full and worker.position in state.resource_cells):
             desired[worker.id] = (worker, worker.position, "RESOURCE")
     resource_reserved: set[Position] = {
         worker.position for worker, _, kind in desired.values() if kind == "RESOURCE"
@@ -1396,8 +1415,10 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None, *,
     eligible_resources = [worker for worker in empty if worker.hp is None or worker.hp > 1]
     resource_assignments = allocate_visible_resources(
         eligible_resources,
-        (resource for resource in memory.visible_targets(state)
-         if resource not in resource_reserved),
+        (() if memory.core_full else (
+            resource for resource in memory.visible_targets(state)
+            if resource not in resource_reserved
+        )),
         lambda worker, resource: plan_path(
             worker.position, {resource}, obstacles, movement_blocked_cells(state, worker.id),
         ),
@@ -1445,6 +1466,9 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None, *,
                 actions[worker.id] = {"type": "WAIT"}
                 memory.traffic.holds[worker.id] = "RETURN_SAFE_AT_CORE"
                 primary_state, primary_target = "RETURN_SAFE", target
+            elif kind == "CORE_FULL_HOLD":
+                actions[worker.id] = {"type": "WAIT"}
+                memory.traffic.holds[worker.id] = "CORE_FULL_HOLD"
             continue
         if (kind in {"RETURN_CORE", "RETURN_SAFE"} and local_ingress_head is not None
                 and worker.id != local_ingress_head
@@ -1501,6 +1525,8 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None, *,
     for worker in workers:
         actions.setdefault(worker.id, {"type": "WAIT"})
     worker_intents = {worker.id: (target, kind) for worker, target, kind in desired.values()}
+    if memory.core_full and core_full_held_carriers:
+        primary_state = "CORE_FULL_ACTIVE"
     return _plan(actions, memory, policy_state=primary_state, target=primary_target,
                  waypoint=primary_target if primary_state == "EXPLORE" else None,
                  path=primary_path, core_action=core_action, worker_intents=worker_intents,
