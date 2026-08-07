@@ -1403,10 +1403,18 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None, *,
             continue
         desired[worker.id] = (worker, state.core_position, "RETURN_SAFE")
 
-    # Current-state resource underfoot preempts stale RESOURCE/EXPLORE targets,
-    # but never cargo return, healing, or threat retreat.
+    # Current-state resource underfoot preempts stale RESOURCE/EXPLORE and an
+    # unthreatened sticky retreat, but never cargo return, healing, current
+    # threat retreat, or Core-full harvest suppression.
     for worker in workers:
-        if (worker.id not in desired and worker.cargo == 0
+        existing = desired.get(worker.id)
+        unthreatened_sticky_retreat = (
+            existing is not None
+            and existing[2] == "RETURN_SAFE"
+            and worker.id not in threatened_worker_ids
+        )
+        if ((existing is None or unthreatened_sticky_retreat)
+                and worker.cargo == 0
                 and (worker.hp is None or worker.hp > 1)
                 and not memory.core_full and worker.position in state.resource_cells):
             desired[worker.id] = (worker, worker.position, "RESOURCE")

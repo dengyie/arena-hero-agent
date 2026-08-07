@@ -62,6 +62,64 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(plan.unit_actions["worker"], {"type": "HARVEST"})
         self.assertNotEqual(plan.unit_actions["other"], {"type": "HARVEST"})
 
+    def test_unthreatened_sticky_safe_retreat_harvests_current_resource_underfoot(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        worker = {"kind": "UNIT", "id": "worker", "controlled": True,
+                  "position": [6, 0], "unit_type": "WORKER", "cargo": 0, "hp": 2}
+        enemy = {"kind": "UNIT", "id": "enemy", "controlled": False,
+                 "position": [8, 0], "unit_type": "WORKER", "hp": 2}
+        memory = ExplorationMemory()
+
+        threatened = snapshot_from_state(1, {"status": "ACTIVE", "resources": 0,
+            "population": 1, "objects": [core, worker, enemy], "events": []})
+        first = economy_plan(threatened, memory)
+        self.assertEqual(first.worker_intents["worker"], ((0, 0), "RETURN_SAFE"))
+
+        resource_worker = {**worker, "position": [5, 0]}
+        resource = {"kind": "RESOURCE", "positions": [[5, 0]]}
+        cleared = snapshot_from_state(2, {"status": "ACTIVE", "resources": 0,
+            "population": 1, "objects": [core, resource_worker, resource], "events": []})
+        harvest = economy_plan(cleared, memory)
+        self.assertIn("worker", memory.safe_retreat_workers)
+        self.assertEqual(harvest.worker_intents["worker"], ((5, 0), "RESOURCE"))
+        self.assertEqual(harvest.unit_actions["worker"], {"type": "HARVEST"})
+
+        carrying = snapshot_from_state(3, {"status": "ACTIVE", "resources": 0,
+            "population": 1, "objects": [core, {**resource_worker, "cargo": 1}],
+            "events": [{"event_id": "harvest", "event_type": "HARVEST_SUCCEEDED",
+                        "actor_id": "worker", "position": [5, 0]}]})
+        returned = economy_plan(carrying, memory)
+        self.assertNotIn("worker", memory.safe_retreat_workers)
+        self.assertEqual(returned.worker_intents["worker"], ((0, 0), "RETURN_CORE"))
+
+    def test_failed_underfoot_harvest_resumes_unthreatened_sticky_retreat(self):
+        core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
+        worker = {"kind": "UNIT", "id": "worker", "controlled": True,
+                  "position": [6, 0], "unit_type": "WORKER", "cargo": 0, "hp": 2}
+        enemy = {"kind": "UNIT", "id": "enemy", "controlled": False,
+                 "position": [8, 0], "unit_type": "WORKER", "hp": 2}
+        memory = ExplorationMemory()
+
+        threatened = snapshot_from_state(1, {"status": "ACTIVE", "resources": 0,
+            "population": 1, "objects": [core, worker, enemy], "events": []})
+        economy_plan(threatened, memory)
+
+        resource_worker = {**worker, "position": [5, 0]}
+        resource = {"kind": "RESOURCE", "positions": [[5, 0]]}
+        cleared = snapshot_from_state(2, {"status": "ACTIVE", "resources": 0,
+            "population": 1, "objects": [core, resource_worker, resource], "events": []})
+        harvest = economy_plan(cleared, memory)
+        self.assertEqual(harvest.unit_actions["worker"], {"type": "HARVEST"})
+
+        failed = snapshot_from_state(3, {"status": "ACTIVE", "resources": 0,
+            "population": 1, "objects": [core, resource_worker],
+            "events": [{"event_id": "failed", "event_type": "HARVEST_FAILED",
+                        "actor_id": "worker", "position": [5, 0]}]})
+        resumed = economy_plan(failed, memory)
+        self.assertIn("worker", memory.safe_retreat_workers)
+        self.assertEqual(resumed.worker_intents["worker"], ((0, 0), "RETURN_SAFE"))
+        self.assertEqual(resumed.unit_actions["worker"]["type"], "MOVE")
+
     def test_current_resource_is_reconsidered_after_harvest_failure(self):
         core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}
         worker = {"kind": "UNIT", "id": "worker", "controlled": True,
