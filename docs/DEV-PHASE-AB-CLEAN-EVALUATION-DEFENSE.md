@@ -345,6 +345,12 @@ empty + enemy_threatens(worker):
 
 上线后真实日志发现瞬时 visibility flap 会导致 `RETURN_SAFE ↔ EXPLORE` 每 Tick切换、Worker 在两格间往返。修复为 sticky retreat transaction：首次当前 threat 将空载健康 Worker ID 写入仅己方 `safe_retreat_workers`；开始携货或进入受伤治疗优先级前，即使下一 Tick威胁暂时不可见也持续 `RETURN_SAFE`，但当前 threat 已消失且 Worker 已进入 Core Manhattan 半径3时结束事务。若半径内仍有当前 threat，Worker 会重新进入 `safe_retreat_workers` 并继续撤退。journal 必须同时区分当前 `threatened_workers` 与仍在返程的 `safe_retreat_workers`；后者不是持久敌方事实。
 
+脚下当前可见资源的特例不取消 sticky retreat transaction。空载健康 Worker
+仅在本 Tick 已无 current threat、Core 未满且自身正站在当前 `RESOURCE.positions`
+时，以 `RESOURCE/HARVEST` 临时覆盖 `RETURN_SAFE`；`safe_retreat_workers`
+保留到下一权威 state。采集成功且 cargo>0 后转 `RETURN_CORE`，资源消失或
+采集失败后恢复 `RETURN_SAFE`；current threat 仍存在时绝不以采集覆盖撤退。
+
 仍处于 `RETURN_SAFE` 的 Worker 纳入既有 Core ingress queue：近区仅队首可继续接近 Core，其他撤离Worker显式 `CORE_INGRESS_HOLD`；`RETURN_CORE`（携货交付）永远排在同一批新进入者的 `RETURN_SAFE` 之前。当前 threat 已消失且进入半径3的空载Worker先退出撤退事务，不再占用 ingress。
 
 最终 ingress 规则：已有有效成员保持相对顺序；离开 `RETURN_CORE/RETURN_SAFE` 事务者移除；仅新进入者追加，并在该新批次内使用 `RETURN_CORE` 优先。这既保留远端 sticky retreat 的连续收敛，也避免已安全的空载Worker继续挤占真正的交付队列。
@@ -445,6 +451,10 @@ path.py 的 budget/node cap
 7. 动态 MOVE failure 仍只进 traffic TTL；
 8. Worker explicit action / `unassigned_workers=[]` 保持；
 9. Core full/人口19 guard 与 Phase B 不交叉破坏。
+
+- current threat + resource underfoot: remain `RETURN_SAFE`, do not harvest;
+- cleared current threat + sticky retreat + resource underfoot: `HARVEST`, then
+  authoritative cargo decides `RETURN_CORE` or resumed `RETURN_SAFE`.
 
 ### Noninterference fixed-state probes
 
