@@ -173,7 +173,8 @@ Ranger: 仅已存在 Ranger；当前可见 UNIT/CORE、水平/垂直/45度、距
 
 远端 sticky retreat 不覆盖已清除 current threat 后的脚下当前可见资源：该 Tick
 允许 `HARVEST`，但不提前清除撤退事务；current threat、carrying、injured 和
-Core-full 仍保持更高优先级。
+Core-full 仍保持更高优先级。若该次采集失败，即使资源仍可见，该 Worker 也先
+恢复 `RETURN_SAFE`，直到离开失败格后才允许新的脚下资源采集。
 
 战斗损益账本已上线：`hp=0` 仅为 candidate；只有己方 Unit 在**下一完整 owned state**缺失才确认 friendly death。敌方是私有可见性，不得以“下一 state 不可见”判定 kill；只记录官方 `DESTRUCTION_PARTICIPATION` 为本方参与敌方 destruction。episode 在 8 Tick 无 combat event 后关闭，输出 shots hit/miss、Sweep targets hit、outgoing/incoming damage、confirmed friendly deaths、friendly cargo lost 与 enemy destruction participations。上线首段10/10 HTTP 202且新字段完整，但无敌方/攻击，故没有真实 episode 或 confirmed loss，仍待干净窗口实战验收。
 

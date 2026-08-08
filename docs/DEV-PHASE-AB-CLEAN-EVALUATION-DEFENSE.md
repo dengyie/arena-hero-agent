@@ -349,7 +349,8 @@ empty + enemy_threatens(worker):
 仅在本 Tick 已无 current threat、Core 未满且自身正站在当前 `RESOURCE.positions`
 时，以 `RESOURCE/HARVEST` 临时覆盖 `RETURN_SAFE`；`safe_retreat_workers`
 保留到下一权威 state。采集成功且 cargo>0 后转 `RETURN_CORE`，资源消失或
-采集失败后恢复 `RETURN_SAFE`；current threat 仍存在时绝不以采集覆盖撤退。
+采集失败后恢复 `RETURN_SAFE`；即使该资源仍可见，同一 Worker 在离开失败格前
+也不重复采集。current threat 仍存在时绝不以采集覆盖撤退。
 
 仍处于 `RETURN_SAFE` 的 Worker 纳入既有 Core ingress queue：近区仅队首可继续接近 Core，其他撤离Worker显式 `CORE_INGRESS_HOLD`；`RETURN_CORE`（携货交付）永远排在同一批新进入者的 `RETURN_SAFE` 之前。当前 threat 已消失且进入半径3的空载Worker先退出撤退事务，不再占用 ingress。
 

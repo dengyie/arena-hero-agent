@@ -112,13 +112,31 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(harvest.unit_actions["worker"], {"type": "HARVEST"})
 
         failed = snapshot_from_state(3, {"status": "ACTIVE", "resources": 0,
-            "population": 1, "objects": [core, resource_worker],
+            "population": 1, "objects": [core, resource_worker, resource],
             "events": [{"event_id": "failed", "event_type": "HARVEST_FAILED",
                         "actor_id": "worker", "position": [5, 0]}]})
         resumed = economy_plan(failed, memory)
         self.assertIn("worker", memory.safe_retreat_workers)
         self.assertEqual(resumed.worker_intents["worker"], ((0, 0), "RETURN_SAFE"))
         self.assertEqual(resumed.unit_actions["worker"]["type"], "MOVE")
+
+        blocked = snapshot_from_state(4, {"status": "ACTIVE", "resources": 0,
+            "population": 1, "objects": [core, resource_worker, resource],
+            "events": [{"event_id": "blocked", "event_type": "UNIT_MOVE_FAILED",
+                        "actor_id": "worker", "position": [5, 0]}]})
+        still_resumed = economy_plan(blocked, memory)
+        self.assertEqual(still_resumed.worker_intents["worker"], ((0, 0), "RETURN_SAFE"))
+        self.assertEqual(still_resumed.unit_actions["worker"]["type"], "MOVE")
+
+        moved_worker = {**worker, "position": [4, 0]}
+        moved_resource = {"kind": "RESOURCE", "positions": [[4, 0], [5, 0]]}
+        moved = snapshot_from_state(5, {"status": "ACTIVE", "resources": 0,
+            "population": 1, "objects": [core, moved_worker, moved_resource],
+            "events": [{"event_id": "moved", "event_type": "UNIT_MOVE_SUCCEEDED",
+                        "actor_id": "worker", "position": [4, 0]}]})
+        reconsidered = economy_plan(moved, memory)
+        self.assertEqual(reconsidered.worker_intents["worker"], ((4, 0), "RESOURCE"))
+        self.assertEqual(reconsidered.unit_actions["worker"], {"type": "HARVEST"})
 
     def test_current_resource_is_reconsidered_after_harvest_failure(self):
         core = {"kind": "CORE", "id": "core", "controlled": True, "position": [0, 0]}

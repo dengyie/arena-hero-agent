@@ -452,6 +452,7 @@ class ExplorationMemory:
     frontier_arrival_wait_ticks: int = 0
     frontier_completion_transitions: set[str] = field(default_factory=set)
     safe_retreat_workers: set[str] = field(default_factory=set)
+    failed_retreat_harvest_cells: dict[str, Position] = field(default_factory=dict)
     combat: CombatMemory = field(default_factory=CombatMemory)
 
     def _reset_for_core(self, state: Snapshot) -> None:
@@ -469,6 +470,7 @@ class ExplorationMemory:
         self.active_targets.clear()
         self.active_target = None
         self.safe_retreat_workers.clear()
+        self.failed_retreat_harvest_cells.clear()
         self.core_full = False
         self.recovery_cooldown_until = 0
         self.allocation_count = 0
@@ -503,6 +505,13 @@ class ExplorationMemory:
             and (state.core_position is None
                  or manhattan(worker.position, state.core_position) > CORE_GUARD_RADIUS)
         }
+        worker_positions = {worker.id: worker.position for worker in state.workers}
+        self.failed_retreat_harvest_cells = {
+            worker_id: position
+            for worker_id, position in self.failed_retreat_harvest_cells.items()
+            if worker_id in self.safe_retreat_workers
+            and worker_positions.get(worker_id) == position
+        }
         self.ledger.trim(state.tick)
         self.traffic.trim(state.tick)
 
@@ -536,6 +545,8 @@ class ExplorationMemory:
                 obs.last_seen_tick = state.tick
                 obs.failure_count += 1
                 self.active_targets.pop(actor_id, None)
+                if actor_id in self.safe_retreat_workers:
+                    self.failed_retreat_harvest_cells[actor_id] = pos
             elif kind == "DEPOSIT_FAILED":
                 self.core_full = event.get("reason_code") == "CORE_RESOURCE_FULL"
             elif kind == "CORE_SPAWN_FAILED":
@@ -1412,6 +1423,7 @@ def economy_plan(state: Snapshot, memory: ExplorationMemory | None = None, *,
             existing is not None
             and existing[2] == "RETURN_SAFE"
             and worker.id not in threatened_worker_ids
+            and memory.failed_retreat_harvest_cells.get(worker.id) != worker.position
         )
         if ((existing is None or unthreatened_sticky_retreat)
                 and worker.cargo == 0
